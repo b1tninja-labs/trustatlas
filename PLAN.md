@@ -1,8 +1,30 @@
 # trustatlas: the supply chain of trust anchors
 
-Status: **plan directory. Deliberately unbuilt, and deliberately not a shell.** A renderer plus the data
-pipeline that feeds it, downstream of `certledger`'s store and `asn1core`'s X.509 layer. No package, no
-`package.json`, no runnable command here until the SDKs it consumes exist — see `AGENTS.md`.
+Status: **P1 landed 2026-11-05; the rest is still a plan.** `tools/probe_sources.py` generates the source catalog,
+`Dockerfile` + `compose.yaml` run it, and artifacts live in `M:\trustatlas`. Still unbuilt: the readers (P2), the
+derivation edges (P3), the index (P4, owned by `certledger`), and the renderer. `AGENTS.md` governs what may be
+added here. No `package.json`, no PyPI, no protocol logic.
+
+## What P1 measured
+
+`docker compose run --rm probe` and a host run of the same script both reported **13 of 18 sources available**.
+Comparing the two catalogs by content hash — which is the P1 exit test — found 11 identical and **2 differing:
+`debian.ca_certificates` and `android.aosp.files`**. Those won their slot by returning 200 on an HTML directory
+listing, whose bytes change every request. Three things follow, and they are the actual output of P1:
+
+- **Availability is not fitness, and fitness is not stability.** A source is evidence only if the same URL yields
+  the same bytes. `sources` entries whose content type is HTML are pages about a store, not the store.
+- The catalog must therefore carry a **stability verdict obtained by fetching twice**, or it silently launders web
+  pages into artifacts. That is obligation `ta.stability` below, and it is the next thing to implement here.
+- The six URLs I had written by hand were wrong in a specific way: **NSS `certdata.txt` was a branch-name
+  mistake** — the mirror's branch is `MAIN`, and the file is 1,356,175 bytes. `openjdk.cacerts`, the CCADB
+  cross-program report and RIPE/APNIC/LACNIC TALs still have no working URL: four known-gaps, deliberately left
+  as gaps rather than papered over with a substitute that answers 200 for something else.
+
+One incidental measurement worth keeping: **curl's `cacert.pem` and `certifi`'s bundle each carry 118 PEM blocks
+while CCADB's Mozilla included bundle carries 169.** That 51-root gap is exactly the kind of thing the derivation
+view (P3) exists to explain rather than assert.
+
 
 **Name.** **Ratified 2026-11-05.** Measured with `sdk-forge/names.py --index` against the 931,439-name
 snapshot: `trustatlas` — **free on both signals, zero names one keystroke away**. `anchoratlas`, `rootstore` and
@@ -282,6 +304,7 @@ network cost at all, which is why they come first.
 | `ta.freshness` | Staleness surfaced, never hidden |
 | `ta.reach` | Cross-sign reach computed via `pkix`, not by hand |
 | `ta.index` | The certificate index, owned by `certledger`: SPKI / name / fingerprint keys, `GapState` returned with every answer, verification incremental rather than total |
+| `ta.stability` | A source is fetched twice before it counts: identical SHA-256 across runs makes it an artifact, differing bytes make it a web page. Found the hard way — two of thirteen "available" sources were HTML listings that change every request |
 
 ## Decisions this needs from a human
 
