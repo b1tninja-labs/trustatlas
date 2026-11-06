@@ -295,7 +295,7 @@ Authenticode, TPM and hardware-compatibility roots. `CurrentUser\Root` additiona
 One caveat on the method: the bundle side carries **no EKU at all** (120 of 120), so EKU can *exclude* a store
 certificate but can never *confirm* a bundle one.
 
-Two consequences, both load-bearing:
+Three consequences, all load-bearing:
 
 1. **P2's diff must split by EKU and by store**, or its headline number is noise. Counting
    `CN=DESKTOP-CIJSDJG` beside `CN=DigiCert Global Root CA` measures nothing about trust.
@@ -303,6 +303,16 @@ Two consequences, both load-bearing:
    trust root set is a TLS set plus a code-signing set plus expired residue plus whatever a launcher or an
    anti-cheat agent installed. The per-machine view is a separate artifact, and the interception roots are the
    first evidence it is worth having on its own terms.
+3. **"Trusted" is defined per program, and CT obligation follows that same boundary** — so a bit is the wrong
+   data type. MDN records that "Firefox desktop, starting from version 135, and Firefox for Android, starting
+   from version 145, require CT log inclusion for all certificates issued by certificate authorities in
+   Mozilla's Root CA Program", while Chrome's policy applies to certificates chaining to the roots *Chrome*
+   ships and judges compliance by SCT count, log state and operator distinctness instead. Apple's requirement
+   varies again. Nothing enforces the union of those sets, so an anchor view needs **program + snapshot date**
+   on every row — "trusted in Mozilla's program as of 2026-11-06", never a bare `trusted: true`.
+   See `certledger/BROWSER-POLICY.md` §1 for the quotations and §3 for the provenance pattern worth copying:
+   Chrome's log list is **signed, versioned (`96.2`) and republished daily**, which is what an assertion that
+   moves every day should look like.
 
 ## Phasing, each with an exit test
 
