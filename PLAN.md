@@ -260,12 +260,49 @@ the concern — none of them get written here.
 
 | Project | Needed | Why it belongs there |
 | --- | --- | --- |
-| `asn1core` | Read a PEM bundle, an NSS `certdata.txt` object sequence and a Windows export into `(subject, SPKI, serial, validity)` **from the stored bytes** | It is the only place that keeps original octets, which is what makes an SPKI hash trustworthy |
+| `asn1core` | Read a PEM bundle, an NSS `certdata.txt` object sequence and a Windows export into `(subject, SPKI, serial, validity)` **from the stored bytes** — armour delivered 2026-11-05 (`dk.pem`); the `certdata.txt` reader is still owed | It is the only place that keeps original octets, which is what makes an SPKI hash trustworthy |
 | `pkix` | Issuer-link and path validation over those stored bytes | Cross-sign reach is a path question. Hand-rolled chain walking in a pipeline would be a second, laxer validator — the thing `pkix`'s narrow RFC 5280 section 6 scope exists to prevent |
 | `certledger` | The persistent store made **queryable**: SPKI-of-issuer / name / fingerprint keys, coverage state returned with every answer, and incremental inclusion verification. This is the certificate index, and it is the prerequisite for every analysis here | It is `cl.states`' phase-3 wiring and the deferred store under another name — one store serving incidents and the map, or the two will disagree in public. Gated, as always, on the fetch layer and the anchor decision |
 | `ctspy` | Keep serving fleet artifacts (`inclusion_sweep()`) as the CT section's data | Already true; the renderer consumes it rather than re-deriving it |
 | `namespy` | A DANE/TLSA lookup and DNSSEC anchor handling | TLSA exists in its codec (`namespy/enums.py:260`, RFC 6698 section 3) but there is no validation path. `certledger/ROADMAP.md` claimed `namespy` "does not exist yet" — corrected 2026-11-05: it is implemented, and the gap is DANE rather than the resolver |
 | `keyproof` | The blocklist artifact | `trustatlas` renders it; authoring compromise claims, with their oracle problem, is `keyproof`'s |
+
+### What the first join measured (2026-11-05)
+
+The reader half of the `asn1core` row landed the same day — obligation `dk.pem`, commit `268cb10`: RFC 7468
+armour in all three grammars of §3, encapsulation boundaries case-sensitive per erratum 4508, Appendix A vendored
+verbatim as the negative corpus, 17 tests, plus 75 operating-system certificates round-tripped with zero
+failures by `tools/crosscheck_pem.py`. That made an end-to-end run over two real sources possible with no
+fixture anywhere in the path:
+
+- **curl/certifi's `cacert.pem`** — 238,641 octets, **120 blocks**, every one labelled `CERTIFICATE`, every one
+  conforming to Figure 3, and **120 of 120 byte-identical when re-encoded here**. A strict generator and the
+  ecosystem's generator agree on real data, which is the cheapest possible confirmation that the strict path is
+  not a private fantasy. None of the 120 is past its `notAfter`.
+- **This machine's stores** (`LocalMachine\Root`, `LocalMachine\CA`, `CurrentUser\Root`) — 75 certificates,
+  **74 distinct keys**.
+- **The join — 29 keys in both**, 91 bundle-only, 45 store-only. An independent join by subject DN returns the
+  same **29**, with zero certificates whose name matched while their key did not. Two different keys over the
+  same pipeline agreeing is what makes that a measurement rather than a bug report.
+
+The 45 store-only certificates are not "CAs Mozilla rejects", and that is the part P2 has to handle. Measured
+from the certificates themselves: **10 are already past `notAfter`** (earliest end date 1999-12-30: the 1997
+Microsoft and VeriSign roots, Thawte Timestamping CA, DST Root CA X3); **5 carry an EKU that omits TLS server
+authentication**, four of them still inside their window — three `CN=AMD-KEYID-…` and
+`CN=Electronic Arts, Inc., OU=EA SPEAR AntiCheat Engineering`, valid to 2027-2032; the rest are time-stamping,
+Authenticode, TPM and hardware-compatibility roots. `CurrentUser\Root` additionally holds
+`CN=Blizzard Battle.net Local Cert`, `CN=Root Agency`, and `CN=DESKTOP-CIJSDJG`, which runs to **3025-06-27**.
+One caveat on the method: the bundle side carries **no EKU at all** (120 of 120), so EKU can *exclude* a store
+certificate but can never *confirm* a bundle one.
+
+Two consequences, both load-bearing:
+
+1. **P2's diff must split by EKU and by store**, or its headline number is noise. Counting
+   `CN=DESKTOP-CIJSDJG` beside `CN=DigiCert Global Root CA` measures nothing about trust.
+2. **"Every globally trusted CA" is bundle-scoped with a named source, never machine-scoped.** A machine's
+   trust root set is a TLS set plus a code-signing set plus expired residue plus whatever a launcher or an
+   anti-cheat agent installed. The per-machine view is a separate artifact, and the interception roots are the
+   first evidence it is worth having on its own terms.
 
 ## Phasing, each with an exit test
 
@@ -275,7 +312,9 @@ the concern — none of them get written here.
   SHA-256 into a catalog artifact. *Exit:* the 404 rows are either gone or listed as explicitly unavailable, and a
   test re-reads the committed catalog and re-hashes the bytes it claims.
 - **P2 — Windows and one bundle, end to end.** Local store export plus `cacert.pem` through `asn1core` into
-  `anchor`/`store` artifacts with provenance; SPKI join between them. *Exit:* the diff between this machine's
+  `anchor`/`store` artifacts with provenance; SPKI join between them (the join itself is demonstrated above —
+  29 keys, corroborated by subject — so what is left is persisting it as artifacts and splitting by EKU and by
+  store). *Exit:* the diff between this machine's
   store and the Mozilla-derived bundle is produced by a command, and a second run reproduces its counts.
 - **P3 — derivation edges computed.** Subset relations between at least four bundles, from hashes alone. *Exit:*
   every edge carries `verified: true`, and at least one asserted-but-false edge is caught and kept as a test.
