@@ -142,10 +142,12 @@ def probe(source: tuple[str, str, list[str]], timeout: int, retries: int) -> dic
                 break
         if won:
             break
+    stability = probe_stability(won, timeout) if won else None
     return {
         "id": sid,
         "group": group,
         "available": won is not None,
+        **(stability if stability else {"stable": None, "second_sha256": None, "second_status": None}),
         "url": won["url"] if won else None,
         "status": won["status"] if won else None,
         "bytes": won["bytes"] if won else None,
@@ -155,6 +157,20 @@ def probe(source: tuple[str, str, list[str]], timeout: int, retries: int) -> dic
         "statuses": [a.get("status") or a.get("error") for a in attempts],
         "attempts": attempts,
     }
+
+
+def probe_stability(won: dict, timeout: int) -> dict:
+    """Fetch the winner a second time. Same SHA-256 means the URL yields an artifact; different means it is a
+    generated page. Found the hard way: two sources were "available" as HTML directory listings whose bytes change
+    on every request, and a catalog that hashes them is laundering a web page into evidence (`ta.stability`)."""
+    again = fetch(won["url"], timeout)
+    second = again.get("sha256")
+    return {
+        "stable": second is not None and second == won["sha256"],
+        "second_sha256": second,
+        "second_status": again.get("status") or again.get("error"),
+    }
+
 
 
 def main() -> int:
@@ -179,34 +195,46 @@ def main() -> int:
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
         for row in pool.map(lambda s: probe(s, args.timeout, args.retries), sources):
             rows.append(row)
-            detail = f"{row['bytes']} B, {row['pem_blocks']} PEM" if row["available"] else str(row["statuses"])
+            if row["available"]:
+                verdict = "stable" if row["stable"] else "VOLATILE"
+                detail = f"{row['bytes']} B, {row['pem_blocks']} PEM, {verdict}"
+            else:
+                detail = str(row["statuses"])
             print(f"{'OK ' if row['available'] else 'NO '} {row['id']:28} {detail}", flush=True)
 
     stamp = began.strftime("%Y%m%dT%H%M%SZ")
     ok = sum(1 for r in rows if r["available"])
+    stable = sum(1 for r in rows if r["stable"])
     doc = {
         "kind": "trustatlas-source-catalog",
         "began_at": began.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "ended_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sources_total": len(rows),
         "sources_available": ok,
+        "sources_stable": stable,
         "provenance": {
             "command": f"python tools/probe_sources.py --data {args.data}",
             "tool": "trustatlas/tools/probe_sources.py",
             "python": platform.python_version(),
             "user_agent": UA,
-            "reading": "statuses lists every attempt per source in order. A 404 is a wrong guess, not an absent source.",
+            "reading": "statuses lists every attempt per source in order. A 404 is a wrong guess, not an absent "
+            "source. stable is a second fetch of the winning URL: true means the same bytes, false means the URL "
+            "generates a page and is not an artifact.",
         },
         "sources": sorted(rows, key=lambda r: (r["group"], r["id"])),
     }
     text = json.dumps(doc, indent=1) + "\n"
-    (out_dir / f"catalog-{stamp}.json").write_text(text, encoding="utf-8")
+    # A partial sweep carries its source id: two `--only` runs started in the same second would otherwise write to
+    # the same path and the second would replace the first, which is the same defect as overwriting a committed
+    # window. Full sweeps keep the plain timestamped name (they take far more than a second, so they cannot collide).
+    name = f"catalog-{stamp}.json" if args.only is None else f"catalog-{stamp}-{args.only}.json"
+    (out_dir / name).write_text(text, encoding="utf-8")
     if args.only is None:
         # Only a complete sweep may move `catalog.json`. A `--only` run is a probe of one source, and letting it
         # overwrite the canonical catalog would replace a full record with a fragment - the same class of bug as
         # keying captured corpus windows by log alone.
         (out_dir / "catalog.json").write_text(text, encoding="utf-8")
-    print(f"\n{ok}/{len(rows)} sources available; wrote {out_dir / ('catalog-' + stamp + '.json')}")
+    print(f"\n{ok}/{len(rows)} available, {stable} stable; wrote {out_dir / name}")
     return 0 if ok else 1
 
 

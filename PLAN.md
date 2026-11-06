@@ -14,8 +14,10 @@ listing, whose bytes change every request. Three things follow, and they are the
 
 - **Availability is not fitness, and fitness is not stability.** A source is evidence only if the same URL yields
   the same bytes. `sources` entries whose content type is HTML are pages about a store, not the store.
-- The catalog must therefore carry a **stability verdict obtained by fetching twice**, or it silently launders web
-  pages into artifacts. That is obligation `ta.stability` below, and it is the next thing to implement here.
+- The catalog therefore carries a **stability verdict obtained by fetching twice**, or it silently launders web
+  pages into artifacts. `ta.stability` landed the same day: the sweep now reports **13 available, 11 stable**, and
+  flags exactly `android.aosp.files` and `debian.ca_certificates` as VOLATILE. A source is evidence only if the
+  same URL yields the same bytes twice.
 - The six URLs I had written by hand were wrong in a specific way: **NSS `certdata.txt` was a branch-name
   mistake** — the mirror's branch is `MAIN`, and the file is 1,356,175 bytes. `openjdk.cacerts`, the CCADB
   cross-program report and RIPE/APNIC/LACNIC TALs still have no working URL: four known-gaps, deliberately left
@@ -304,7 +306,7 @@ network cost at all, which is why they come first.
 | `ta.freshness` | Staleness surfaced, never hidden |
 | `ta.reach` | Cross-sign reach computed via `pkix`, not by hand |
 | `ta.index` | The certificate index, owned by `certledger`: SPKI / name / fingerprint keys, `GapState` returned with every answer, verification incremental rather than total |
-| `ta.stability` | A source is fetched twice before it counts: identical SHA-256 across runs makes it an artifact, differing bytes make it a web page. Found the hard way — two of thirteen "available" sources were HTML listings that change every request |
+| `ta.stability` | **Implemented 2026-11-05.** A source is fetched twice before it counts: identical SHA-256 across runs makes it an artifact, differing bytes make it a web page. Found the hard way — two of thirteen "available" sources were HTML listings that change every request, and the sweep now reports 11 stable |
 
 ## Decisions this needs from a human
 
