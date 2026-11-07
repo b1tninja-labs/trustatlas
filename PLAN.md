@@ -27,6 +27,28 @@ DER files):
   EKU list would have come back as that string and the honest reading would have been "no anchor has an EKU" — a
   serializer artifact dressed as a fact about the store. `-Depth 6` is now explicit.
 
+## Cross-program join, the same day
+
+`collect_bundle.py` reads a PEM bundle program the same way — split blocks, base64-decode, SHA-256 the DER, name
+nothing — and `join_programs.py` joins two artifacts on certificate SHA-256 and prints both one-sided remainders.
+certifi's local bundle carries **120 distinct certificates** today (the 118 recorded above was an earlier version of
+the package, and the count is a property of the file, so it is reported per run with the file's own SHA-256).
+
+**Windows machine store (68) × certifi (120): 29 shared, 39 only in Windows, 91 only in certifi.** Two things come
+out of the 39, and they are the reason the join exists:
+
+- **Roots that other programs dropped are still trusted here**: `DST Root CA X3` and `Starfield Class 2
+  Certification Authority` are in the machine store and in no certifi certificate.
+- **Non-web anchors sit in the same store as web roots**: `Electronic Arts, Inc. / EA SPEAR AntiCheat Engineering`,
+  `Blizzard Battle.net Local Cert`, `DigiCert CS ECC P384 Root G5` and `Microsoft ECC TS Root Certificate Authority
+  2018` all appear in `Cert:\LocalMachine\Root` and nowhere in certifi. This is design goal 6's claim — a machine
+  store is not one trust set — evidenced rather than asserted: code-signing, timestamping and two locally installed
+  application CAs are trusted by the same mechanism as TLS roots, and no browser-facing inference would separate them.
+
+These are statements about what the store contains, not about whether any of it is compromised; `keyproof/PLAN.md`
+owns compromise claims and nothing here makes one. The asymmetry is also a fact: the bundle side is hashes only, so
+its 91 can be counted but not named. Naming them means parsing, and parsing is `asn1core`'s.
+
 Scope, honestly bounded: the OS is the parser here. Subject, validity and EKU are what Windows states; this script
 decodes no certificate. The join key is therefore the **certificate** SHA-256, which cannot connect a root to a
 cross-signed copy of the same key — and joining cross-signs is the point of the map. **SPKI SHA-256 is `asn1core`'s
