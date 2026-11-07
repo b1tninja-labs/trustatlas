@@ -156,6 +156,40 @@ function of that machine's connection history, which is the clearest argument th
 taken per host rather than a canonical list asserted in prose. The registry carries this as
 `windows.root.physical` and `windows.ca.user`, and the counts come from artifacts, not from this paragraph.
 
+## How the bytes got here: fetcher, extractor, validator
+
+A store's contents are only half the claim. The other half is how the material arrived, and each upstream
+answers that differently, which is why the map records the channel and not just the count:
+
+* **curl** publishes the SHA-256 of the exact bundle it serves. `cacert.pem.sha256` matched the bytes we hold,
+  so the transport is checkable without taking TLS on faith — the only upstream here that hands over an
+  integrity value, and its own `docs/caextract.html` states that the bundle is extracted from Mozilla's list.
+* **certifi** puts the bundle in git and publishes a per-file SHA-256 on PyPI, so a wheel is checkable too.
+  The installed bundle (`16be3f6f…`) is *not* git head (`2ef52ad5…`): a release lags head, and having both
+  digests is what turns "how stale is this interpreter's store?" from a guess into a comparison.
+* **Mozilla** serves `certdata.txt` from Mercurial, which is canonical and current, and it is mirrored into
+  git, which is where commit history and therefore authorship is readable. The two differ today
+  (`3ec2b4d2…` against `579f336a…`), so validating from GitHub means reading a stale copy — a fact worth
+  stating precisely because the tempting endpoint is the one with the pretty history. The Mercurial JSON log
+  answered with HTML and gitiles refused `+log?format=JSON` with 401, so *who changed the list* is readable
+  from the mirror, not from the server that has the current bytes.
+* **Node** compiles its anchors in, so there is no file on disk to audit; `src/node_root_certs.h` is the
+  auditable channel, 118 anchors in C string literals against 145 in the installed v25.9.0 binary.
+* **Android** arrives as a gitiles archive of one file per anchor, retained so it can be re-extracted offline.
+* **Windows** has no file channel: the list arrives through Windows Update, and `authroot.stl` needs the CTL
+  decoder that lives in pkix. Validated by re-running the provider on the same machine, never by a URL.
+
+`tools/verify_provenance.py` is the validator and it is deliberately boring: 8 checks, each comparing two
+independent descriptions of the same material, exit code non-zero only where agreement is required. It carries
+one design rule that the rest of the project should keep. **Retain the raw payload**, because re-deriving the
+artifact from it is the only check on the extractor, and the extractor is where the mistakes hide: Android's
+mislabelled names were invisible to every cross-channel comparison and visible only to running the extractor
+again over bytes already on disk.
+
+Anyone can reproduce this without trusting any of it: run `verify_provenance.py --check`, or re-collect a store
+into a second data directory and `join_programs.py` it against the committed artifact — which is how the
+machine store, curl, and certifi were all shown to reproduce exactly.
+
 ## The two bundles that are called the same thing are ten certificates apart
 
 Both sides now carry names from their own files, so the difference is not a count but a list.
