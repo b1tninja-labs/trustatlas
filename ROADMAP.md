@@ -25,7 +25,7 @@ here; `PLAN.md`'s gating rule and its **Unverified** section bind this document 
 | `ta.collect_bundle` | curl bundle, HTTPS | `[part]` | `tools/collect_bundle.py --url` — takes `--url` because the image has no `certifi`; hash and count recorded, membership not diffed between runs |
 | `ta.collect_store` | `Cert:\LocalMachine` on Windows | `[part]` | `tools/collect_store.py` — measured 68 `Root` / 52 `AuthRoot` / 0 `Disallowed` on 2026-11-06, exit 3 on non-Windows; a one-machine artifact with no re-derivation check |
 | `ta.collect_ctl` | MS-CAB, MS-CTL | `[part]` | `tools/collect_ctl.py` — fetches over plain HTTP, checks `MSCF`, pins `c0aa761f…`; reports `certificates_enumerated: 0`, `decoded: false` |
-| `ta.join_programs` | PLAN.md §joins | `[part]` | `tools/join_programs.py` — joins by hash; certificate-level only until `asn1core` produces SPKI SHA-256, so cross-signed twins are not collapsed |
+| `ta.join_programs` | PLAN.md §joins | `[part]` | `tools/join_programs.py` — joins on certificate SHA-256. Measured 2026-11-07 with `asn1core.spki_sha256`: certifi (120) × curl (118) share 114 certificates and **114 keys**, and none of the 6 certifi-only or 4 curl-only certificates shares a key across the two, so for bundles the certificate key is not lying. Artifacts carry hashes and counts only (no DER is retained pending `cl.aup-review`), so a key-level join cannot be reproduced from them |
 | `ta.compose_collect` | compose `collect` service | `[part]` | `compose.yaml` — executed with Docker 29.3.1; nothing asserts the three tools still succeed in the image |
 | `ta.readers_remaining` | PLAN.md P2 | `[ ]` | unread programs: Android, Java, GnuTLS, OpenSSL-on-Linux distro stores, macOS `security trust-settings-export` |
 
@@ -34,7 +34,7 @@ here; `PLAN.md`'s gating rule and its **Unverified** section bind this document 
 | Obligation | Spec | Status | Where |
 |---|---|---|---|
 | `ta.derive_issuer_edges` | RFC 5280 issuer/subject links | `[ ]` | owned by `pkix`; needs `asn1core` name encoding before an edge can be asserted rather than guessed |
-| `ta.spki_key_identity` | SPKI SHA-256 | `[ ]` | owned by `asn1core`; blocks the key-level question, and with it any claim that two programs trust the *same key* |
+| `ta.spki_key_identity` | SPKI SHA-256 | `[part]` | `asn1core` **shipped it**: `x509.spki_sha256`, pinned by `tests/test_x509_corpus.py::test_the_extracted_digests_match_an_independent_implementation` against digests `cryptography` printed for the same bytes. What remains is consumption: `trustatlas` tools are stdlib-only, so the key identity must arrive through an artifact or an `asn1core`-side tool, not a parser grown here |
 | `ta.ctl_decode` | MS-CAB unpack, signed trust blob | `[ ]` | owned by `pkix`: `cab.member()`, `ctl.root_program()`, `ctl.signed_by_microsoft()`. Until those exist the Windows program is bytes and a pinned hash, not a membership count |
 | `ta.coverage_index` | PLAN.md P4 | `[ ]` | owned by `certledger`; the index that makes coverage a queryable state rather than a paragraph |
 
@@ -55,4 +55,16 @@ here; `PLAN.md`'s gating rule and its **Unverified** section bind this document 
 | `ta.live_oracle` | view-time fetching | `[no]` | the renderer reads committed artifacts; a page that fetches at view time cannot state what it saw when, and its absence claims come unanchored |
 | `ta.compromise_claims` | `keyproof/PLAN.md` | `[no]` | this site renders a blocklist and never writes one, including its oracle problem |
 | `ta.package` | `pyproject.toml`, PyPI | `[no]` | `tools/` holds stdlib-only scripts that write artifacts. Scaffolding a package ahead of its wave turns a plan into a shell nobody maintains |
+
+## 5. Board projection
+
+`py sdk-forge/sync_roadmap.py --project trustatlas --check` projects this matrix onto GitHub issues; the
+issues are collected on Project V2 **#2 "Protocol SDK portfolio"**. Read back through the hosted GitHub MCP
+server on 2026-11-07: **20 items** from this repository, all open — 8 `status:partial`, 8
+`status:unimplemented`, 4 `type:non-goal`. The whole board held 42 items across four repositories, cross-checked
+against GraphQL `items.totalCount`.
+
+This section is a dated snapshot, not a live count. The board is the live view; neither is the source of
+truth. **This file is**, and a board cannot enforce a rule — only a test can.
+
 

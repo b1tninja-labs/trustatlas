@@ -224,6 +224,29 @@ obligation** (design goal 3), so the SDK table gains that row rather than this d
 PKI parser. The user-scope stores (`Cert:\CurrentUser\Root`) and other programs (NSS `certdata.txt`, CCADB CSV,
 curl/certifi bundles) are the same shape of collector and are not yet written.
 
+### Key level, measured 2026-11-07
+
+The caveat above is a measurement now, because `asn1core` ships `spki_sha256` (`x509.py`, pinned by
+`tests/test_x509_corpus.py::test_the_extracted_digests_match_an_independent_implementation`, which compares against
+digests `cryptography` printed for the same bytes). Both sources were re-verified before anything was
+concluded: certifi's installed `cacert.pem` reproduced **120/120** recorded digests and
+`https://curl.se/ca/cacert.pem` reproduced **118/118**, so the bytes analysed are the bytes collected.
+
+- **certifi (120) × curl (118): 114 shared certificates and 114 shared keys.** Neither bundle holds two
+  certificates for one key. Of the 6 certifi-only and 4 curl-only certificates, **none** shares a key with
+  the other program. The bundle-to-bundle gap is a difference in keys, not an artifact of cross-signing: for
+  this pair the certificate-level join was hiding nothing.
+- **A realized store does collapse: the Windows machine store's 68 distinct certificates carry 67 distinct
+  keys.** One key (`871a9194f4eed5b3…`) is held by two certificates, both `CN=GTS Root R1, O=Google Trust
+  Services LLC, C=US`, and both appear in `Root` and `AuthRoot`. `asn1core` decoded all 68 without a failure,
+  alongside its own `tools/crosscheck_store.py` over 75 real certificates.
+
+So the key-level join is not needed to explain bundle drift, and it is needed the moment a store enters the
+join, because stores are where cross-signs live. Unchanged: the artifacts carry hashes and counts only, so
+none of this is reproducible from them — the bytes were re-derived from recorded provenance in scratch, not
+stored. Keeping DER is `cl.aup-review`'s question, not this tool's.
+
+
 ## What P1 measured
 
 `docker compose run --rm probe` and a host run of the same script both reported **13 of 18 sources available**.
