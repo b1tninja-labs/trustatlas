@@ -1,9 +1,38 @@
 # trustatlas: the supply chain of trust anchors
 
-Status: **P1 landed 2026-11-05; the rest is still a plan.** `tools/probe_sources.py` generates the source catalog,
-`Dockerfile` + `compose.yaml` run it, and artifacts live in `M:\trustatlas`. Still unbuilt: the readers (P2), the
-derivation edges (P3), the index (P4, owned by `certledger`), and the renderer. `AGENTS.md` governs what may be
-added here. No `package.json`, no PyPI, no protocol logic.
+Status: **P1 landed 2026-11-05; P2's first collector landed 2026-11-06.** `tools/probe_sources.py` generates the
+source catalog, `tools/collect_store.py` collects a live program store, `Dockerfile` + `compose.yaml` run them, and
+artifacts live in `M:\trustatlas`. Still unbuilt: the remaining readers (P2), the derivation edges (P3), the index
+(P4, owned by `certledger`), and the renderer. `AGENTS.md` governs what may be added here. No `package.json`, no
+PyPI, no protocol logic.
+
+## What `collect_store.py` measured, on 2026-11-06, on this machine
+
+The plan called the local store audit "the most useful tool in this plan and the cheapest". It is now that tool, and
+the answers are artifacts (`M:\trustatlas\store\windows.machine.json`, `--with-der` also writes 68 hash-addressed
+DER files):
+
+- **`Cert:\LocalMachine\Root` holds 68 anchors; `AuthRoot` holds 52; `Disallowed` holds 0.** The 68 reproduces the
+  hand measurement in this file independently, and all 52 `AuthRoot` certificates are also in `Root`.
+- **`AAA Certificate Services` is not in either store** — while `COMODO RSA Certification Authority` *is*. So the
+  Comodo key the eMudhra guidance asks users to disable is absent here in the specific form the guidance names, and
+  the neighbouring Comodo root that the same sentence could easily be conflated with is present. That distinction is
+  the artifact's whole value: a browser-error-page inference cannot draw it, and `Disallowed` being empty shows the
+  machine reached this state by never having the certificate rather than by blocking it.
+- Control, so the absence is not the tool's: `--grep Microsoft` finds **16** anchors in the same run's data.
+- **No anchor reports an EKU extension.** Root certificates commonly carry none, and the artifact records absence
+  without deciding what absence means — that is RFC 5280's to say. What the tool will not do is silently upgrade it
+  to "trusted for TLS server authentication"; `with_server_auth_eku` is 0 and stays 0.
+- `ConvertTo-Json` defaults to `-Depth 2`, which serialises a nested array as `System.Object[]`. Left alone, every
+  EKU list would have come back as that string and the honest reading would have been "no anchor has an EKU" — a
+  serializer artifact dressed as a fact about the store. `-Depth 6` is now explicit.
+
+Scope, honestly bounded: the OS is the parser here. Subject, validity and EKU are what Windows states; this script
+decodes no certificate. The join key is therefore the **certificate** SHA-256, which cannot connect a root to a
+cross-signed copy of the same key — and joining cross-signs is the point of the map. **SPKI SHA-256 is `asn1core`'s
+obligation** (design goal 3), so the SDK table gains that row rather than this directory growing a second, laxer
+PKI parser. The user-scope stores (`Cert:\CurrentUser\Root`) and other programs (NSS `certdata.txt`, CCADB CSV,
+curl/certifi bundles) are the same shape of collector and are not yet written.
 
 ## What P1 measured
 
