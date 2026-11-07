@@ -73,7 +73,8 @@ def main() -> int:
     duplicates = 0
     malformed = 0
     blocks = 0
-    for block in text.split(BEGIN)[1:]:
+    chunks = text.split(BEGIN)
+    for previous, block in zip(chunks, chunks[1:]):
         body, _, _ = block.partition(END)
         blocks += 1
         try:
@@ -85,7 +86,42 @@ def main() -> int:
         if digest in seen:
             duplicates += 1
             continue
-        seen[digest] = {"sha256": digest, "der_octets": len(der)}
+        # The comment line the bundle's own maintainer wrote above the block. It is a string in the
+        # file, so naming a certificate with it is not parsing one - and without it, a bundle's side
+        # of a difference can only ever be counted. That is the difference between a number and an
+        # answer, and it is why this line exists.
+        # The header block above a block is the bundle maintainer's own comments. The fingerprint
+        # line is used as an independent check on this script's hashing: if the stated SHA-256 of DER
+        # equals the SHA-256 computed here, the PEM split and base64 decode are right for that
+        # certificate, and 120 of them agreeing tests the collector in a way no fixture-based unit
+        # test can. The other lines name it, which is a string in the file, not a parsed field.
+        label, fingerprint = None, None
+        for line in reversed(previous.splitlines()):
+            stripped = line.strip().lstrip("#").strip()
+            low = stripped.lower()
+            if "fingerprint" in low:
+                if low.startswith("sha256"):
+                    fingerprint = (
+                        stripped.split(":", 1)[-1].strip().replace(":", "").lower()
+                    )
+                continue
+            if low.startswith("subject:") and label is None:
+                label = stripped.split(":", 1)[1].strip()
+                continue
+            if low.startswith(("issuer:", "serial:", "validity:")) or len(stripped) < 5:
+                continue
+            if any(c.isalpha() for c in stripped) and label is None:
+                label = stripped
+                break
+        entry = {
+            "sha256": digest,
+            "der_octets": len(der),
+            "subject": label,
+            "store": args.program,
+        }
+        if fingerprint and len(fingerprint) == 64:
+            entry["bundle_fingerprint_agrees"] = fingerprint == digest
+        seen[digest] = entry
 
     doc = {
         "artifact": "trustatlas.bundle.collect",
@@ -108,6 +144,13 @@ def main() -> int:
             "distinct_certificates": len(seen),
             "duplicate_blocks": duplicates,
             "malformed_blocks": malformed,
+            "fingerprint_checked": sum(
+                1 for c in seen.values() if "bundle_fingerprint_agrees" in c
+            ),
+            "fingerprint_agrees": sum(
+                1 for c in seen.values() if c.get("bundle_fingerprint_agrees")
+            ),
+            "named": sum(1 for c in seen.values() if c.get("subject")),
         },
         "certificates": sorted(seen.values(), key=lambda c: str(c["sha256"])),  # type: ignore[arg-type]
     }
@@ -117,6 +160,12 @@ def main() -> int:
     print(
         f"{args.program}: {blocks} PEM blocks, {len(seen)} distinct certificates, {duplicates} duplicate"
         f"{'s' if duplicates != 1 else ''}, {malformed} malformed -> {out}"
+    )
+    checks = doc["counts"]
+    print(
+        f"  the bundle states a SHA-256 for {checks['fingerprint_checked']} certificates; "
+        f"{checks['fingerprint_agrees']} match what this script hashed, and "
+        f"{checks['named']} carry a name in the file"
     )
     return 0
 

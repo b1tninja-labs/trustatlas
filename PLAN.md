@@ -27,6 +27,54 @@ DER files):
   EKU list would have come back as that string and the honest reading would have been "no anchor has an EKU" — a
   serializer artifact dressed as a fact about the store. `-Depth 6` is now explicit.
 
+## Third program, and the derivation edge gets tested
+
+`collect_certdata.py` reads Mozilla's `certdata.txt` at its source — `CKA_LABEL`, `CKA_VALUE` as
+`MULTILINE_OCTAL`, `CKA_TRUST_*` — and lands **169 certificates, 1,356,175 octets, 117 stated
+trusted for server authentication**. The 169 and the octet count both reproduce figures `PLAN.md`
+already held from an unrelated measurement, so the reader is corroborated before it is trusted.
+
+Two failures worth keeping in the file. The GitHub mirror `raw.githubusercontent.com/nss-dev/nss/MAIN/...`,
+recorded as the working URL two days ago, **now 404s**; `hg.mozilla.org/mozilla-central/raw-file/tip/...`
+serves the same 1,356,175 bytes. Stability is not durability — fetching the same bytes twice yesterday
+says nothing about whether the URL exists today — so the tool now walks a candidate list and writes the
+ruled-out attempts beside the artifact. And my first trust count returned 0 because I compared against
+`CKT_NSS_TRUSTED_CONNECT_PEER`, **a constant I invented**; the value in the dump is `TRUSTED_DELEGATOR`.
+A clean, quiet zero was my error wearing the store's clothes.
+
+`collect_bundle.py` now also reads the comment header above each PEM block. That turned into something
+better than names: certifi states a **SHA-256 of DER per certificate**, and **120 of 120 match what this
+script hashed**. The collector's join key is therefore validated by the bundle maintainer's own data,
+which no fixture-based test of mine could establish. All 120 also carry names, from lines in the file.
+
+**The derivation edge, checked rather than asserted:**
+
+| Join | Shared | Only in first | Only in second | Verdict |
+| --- | --- | --- | --- | --- |
+| NSS 169 × certifi 120 | 115 | 54 | 5 | neither is a subset |
+| NSS 169 × Windows 68 | 38 | 131 | 30 | neither is a subset |
+| Windows 68 × certifi 120 | 29 | 39 | 91 | neither is a subset |
+
+"certifi is Mozilla's bundle" is the common shorthand, and as a hash check it is false in both
+directions: 54 roots Mozilla ships are not in certifi (expected — email-only and client-auth anchors),
+and **5 certificates certifi ships are in no NSS built-in at all**. Named from certifi's own headers,
+those five are `emSign Root CA - C1`, `emSign ECC Root CA - G3`, `emSign ECC Root CA - C3`,
+`SecureSign Root CA12` and `ePKI Root Certification Authority`.
+
+Three are **eMudhra** roots — the brand the October 2026 incident in this plan's opening is about. What
+this artifact establishes is narrow and checkable: those certificates are in certifi's bundle and not in
+Mozilla's, named by the labels each file carries, as of the timestamps in each artifact. Whether any key
+is compromised is `keyproof`'s claim to make and this tool makes none of it; what the map adds is that a
+program that ships "Mozilla's bundle" is shipping three roots Mozilla does not, and nobody reading the
+documentation would know to ask.
+
+Caveat the join states about itself: the key is certificate SHA-256, so a root and a cross-signed copy of
+the same key are two entries. Any of the five could be a different certificate holding a key NSS also
+holds. Only SPKI SHA-256 — `asn1core`, design goal 3 — can tell those two stories apart, and this is the
+finding that makes that dependency load-bearing rather than tidy.
+
+
+
 ## Cross-program join, the same day
 
 `collect_bundle.py` reads a PEM bundle program the same way — split blocks, base64-decode, SHA-256 the DER, name

@@ -74,6 +74,17 @@ def main() -> int:
     print(
         f"  {len(a)} vs {len(b)} certificates; shared {len(shared)}; only-a {len(only_a)}; only-b {len(only_b)}"
     )
+    # The derivation check is the reason the join exists: "certifi derives from NSS built-ins" is a
+    # claim about documentation until one side's hashes come entirely from the other's.
+    if only_a and only_b:
+        verdict = "neither is a subset of the other"
+    elif only_a:
+        verdict = f"{doc_b.get('program')} is a subset of {doc_a.get('program')}"
+    elif only_b:
+        verdict = f"{doc_a.get('program')} is a subset of {doc_b.get('program')}"
+    else:
+        verdict = "identical certificate sets"
+    print(f"  derivation check: {verdict}")
     if named and args.only in ("both", "a"):
         for digest in only_a:
             print(
@@ -81,7 +92,9 @@ def main() -> int:
             )
     if not named or args.only == "b":
         for digest in only_b[:20]:
-            print(f"  only in {doc_b.get('program')}: {digest[:16]}...")
+            row = b[digest]
+            name = row.get("subject") or row.get("labels") or digest[:16] + "..."
+            print(f"  only in {doc_b.get('program')}: {name}")
         if len(only_b) > 20:
             print(
                 f"  ... {len(only_b) - 20} more, all hash-only: a bundle artifact names nothing"
