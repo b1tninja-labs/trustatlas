@@ -125,9 +125,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "--data", default=os.environ.get("TRUSTATLAS_DATA", "M:\\trustatlas")
-    )
+    parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument(
         "--store", action="append", choices=DEFAULT_STORES, help="repeatable"
     )
@@ -138,6 +136,18 @@ def main() -> int:
         "--grep", default=None, help="report anchors whose subject contains this"
     )
     args = parser.parse_args()
+    if os.name != "nt":
+        print(
+            f"this collector reads the Windows certificate store and cannot run on {sys.platform}.\n"
+            "That is placement, not a missing dependency: the realized store of one machine only "
+            "exists on that machine, so this is a host-resident probe. The container and Fargate "
+            "collect program-published lists instead (certdata.txt, PEM bundles). On Linux the "
+            "equivalent artifact is the ca-certificates bundle plus its hash, which "
+            "collect_bundle.py already produces; on macOS it is `security "
+            "trust-settings-export`. Neither is written yet.",
+            file=sys.stderr,
+        )
+        return 3
     stores = args.store or list(DEFAULT_STORES)
 
     rows = read_store(stores, args.with_der)

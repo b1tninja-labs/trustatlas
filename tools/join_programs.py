@@ -47,9 +47,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "--data", default=os.environ.get("TRUSTATLAS_DATA", "M:\\trustatlas")
-    )
+    parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument(
         "--a", required=True, help="first artifact (a store or bundle JSON)"
     )

@@ -27,6 +27,50 @@ DER files):
   EKU list would have come back as that string and the honest reading would have been "no anchor has an EKU" — a
   serializer artifact dressed as a fact about the store. `-Depth 6` is now explicit.
 
+## Where each collector runs, because the target is a Linux container
+
+`Dockerfile` is `python:3.12-slim` and AWS Fargate runs Linux containers only, so a tool that shells out to
+`powershell.exe` and reads `Cert:\LocalMachine` can never run in the image. That was a placement error, not a
+portability nit, and it is now explicit. Two classes, deliberately not mixed:
+
+- **Container-resident, Fargate-able: program-published lists.** `collect_certdata.py` (Mozilla, HTTPS),
+  `collect_bundle.py --url` (curl, HTTPS), `join_programs.py`. `compose.yaml` has a `collect` service that runs
+  all three; it was executed with Docker 29.3.1 and is not a claim about a pipeline nobody ran.
+- **Host-resident, one machine at a time: realized stores.** `collect_store.py` reads the Windows certificate
+  store and now **refuses on non-Windows with exit 3**, naming why: one machine's store only exists on that
+  machine. Its Linux equivalent is the `ca-certificates` bundle plus its hash; its macOS equivalent is
+  `security trust-settings-export` (`PLAN.md` said so before this tool forgot).
+
+`--data` defaults to `/data` in all four tools, matching `probe_sources.py` and the `${TRUSTATLAS_DATA:-M:/trustatlas}:/data`
+bind; the `M:\trustatlas` default I had written would have created a directory literally named `M:\trustatlas`
+inside the container. The image has no `certifi` package and will not gain one, so the bundle collector takes
+`--url` instead.
+
+**What the container run measured**, and it improved the finding:
+
+```
+NSS built-ins: 169 certificates, 117 stated trusted for server authentication (1,356,175 octets)
+curl:          118 PEM blocks, 118 distinct certificates
+NSS 169 x curl 118: shared 118, only-curl 0 -> curl is a subset of Mozilla/NSS built-ins
+```
+
+So design goal 4 is met for the first time: **`cacert.pem ⊂ NSS built-ins` is now a hash check that passes**, and
+the "51-root gap" recorded earlier is explained rather than asserted — those 51 are NSS anchors curl does not
+ship (client-auth, email-only, and root-certificate-version variants such as `COMODO Certification Authority` and
+`Starfield Class 2 CA` sitting beside their newer `RSA`/`G2` siblings).
+
+Set against the host run's certifi result, the two bundles that are habitually called interchangeable are not:
+**curl carries 118 certificates, all inside NSS; certifi carries 120, five of which are in no NSS built-in at all.**
+Whatever else the five eMudhra-adjacent names mean, the asymmetry is between curl and certifi, not between
+either and "Mozilla's bundle".
+
+Two bugs the container found that the host had hidden: `collect_certdata` created `raw/` but never `store/`,
+which worked on the host only because the directory already existed; and `--url` was referenced before it was
+declared, because a patch anchored on text `ruff format` had already rewrapped. Both are the same lesson as the
+soft-404 earlier: an environment you already trust stops testing you.
+
+
+
 ## Third program, and the derivation edge gets tested
 
 `collect_certdata.py` reads Mozilla's `certdata.txt` at its source — `CKA_LABEL`, `CKA_VALUE` as

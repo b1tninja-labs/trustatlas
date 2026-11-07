@@ -23,10 +23,13 @@ import binascii
 import datetime
 import json
 import os
+import ssl
 import sys
+import urllib.request
 from pathlib import Path
 
 BEGIN = "-----BEGIN CERTIFICATE-----"
+UA = "trustatlas-collect-bundle/0 (research; read-only; see repository README)"
 END = "-----END CERTIFICATE-----"
 
 
@@ -52,22 +55,39 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "--data", default=os.environ.get("TRUSTATLAS_DATA", "M:\\trustatlas")
-    )
+    parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument("--program", default="certifi")
     parser.add_argument(
         "--path", default=None, help="PEM bundle to read instead of a default"
     )
+    parser.add_argument(
+        "--url",
+        default=None,
+        help="fetch this PEM bundle instead (the image has no certifi package and will not grow one)",
+    )
     args = parser.parse_args()
 
-    path = bundle_path(args.program, args.path)
-    if path is None or not path.is_file():
-        print(f"no bundle at {path}", file=sys.stderr)
-        return 1
-    text = path.read_text(encoding="utf-8", errors="replace")
-
     import hashlib
+
+    if args.url:
+        raw_dir = Path(args.data) / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        path = raw_dir / f"{args.program}.pem"
+        payload = urllib.request.urlopen(  # noqa: S310
+            urllib.request.Request(args.url, headers={"User-Agent": UA}),  # noqa: S310
+            timeout=90.0,
+            context=ssl.create_default_context(),
+        ).read(32 * 1024 * 1024 + 1)
+        path.write_bytes(payload)
+        text = payload.decode("utf-8", errors="replace")
+        fetched = args.url
+    else:
+        path = bundle_path(args.program, args.path)
+        if path is None or not path.is_file():
+            print(f"no bundle at {path}", file=sys.stderr)
+            return 1
+        text = path.read_text(encoding="utf-8", errors="replace")
+        fetched = None
 
     seen: dict[str, dict[str, object]] = {}
     duplicates = 0
@@ -132,6 +152,7 @@ def main() -> int:
         ),
         "provenance": {
             "path": str(path),
+            "url": fetched,
             "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER",
             "note": (

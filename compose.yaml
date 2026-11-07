@@ -9,3 +9,24 @@ services:
       TZ: UTC
     # One-shot by design: `docker compose run --rm probe`. A schedule belongs to a later service that has code
     # to run; adding a timer around a tool that does not exist yet is the shell failure mode again.
+
+  # Program lists a Linux container can actually fetch: Mozilla's built-ins over HTTPS, curl's bundle
+  # over HTTPS, and the join between them. The Windows machine store is deliberately NOT here -
+  # collect_store.py is host-resident and refuses to run off Windows, because the realized store of one
+  # machine only exists on that machine. A Fargate task can state what each program publishes; it can
+  # never state what a laptop's root store contains, and silence about that artifact must not be read
+  # as an absence of the fact.
+  collect:
+    build: .
+    image: trustatlas-probe:local
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        python tools/collect_certdata.py --data /data --refresh &&
+        python tools/collect_bundle.py --data /data --program curl --url https://curl.se/ca/cacert.pem &&
+        python tools/join_programs.py --data /data --a mozilla.nss.json --b curl.json --out
+        /data/store/nss-x-curl.json
+    volumes:
+      - ${TRUSTATLAS_DATA:-M:/trustatlas}:/data
+    environment:
+      TZ: UTC

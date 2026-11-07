@@ -132,9 +132,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "--data", default=os.environ.get("TRUSTATLAS_DATA", "M:\\trustatlas")
-    )
+    parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument("--path", default=None, help="a certdata.txt already on disk")
     parser.add_argument(
         "--refresh", action="store_true", help="re-download even if cached"
@@ -237,6 +235,7 @@ def main() -> int:
         "notes": notes,
     }
     out = Path(args.data) / "store" / "mozilla.nss.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(
         (json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
     )
