@@ -42,7 +42,7 @@ PS = r"""
 $ErrorActionPreference = 'Stop'
 $out = @()
 foreach ($store in ($env:TA_STORES -split ',')) {
-  $path = "Cert:\LocalMachine\$store"
+  $path = "Cert:\$($env:TA_LOCATION)\$store"
   if (-not (Test-Path $path)) { continue }
   foreach ($c in Get-ChildItem -LiteralPath $path) {
     $eku = @()
@@ -77,11 +77,13 @@ def _now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
 
 
-def read_store(stores: list[str], with_der: bool) -> list[dict[str, Any]]:
+def read_store(
+    stores: list[str], with_der: bool, location: str = "LocalMachine"
+) -> list[dict[str, Any]]:
     """One call to the OS provider; the returned rows are Windows' own statements about each anchor."""
     # The store list travels in the environment: with `-Command`, PowerShell appends trailing argv to
     # the command line and tries to execute them, so `Root` arrived as a cmdlet name.
-    env = {"TA_STORES": ",".join(stores)}
+    env = {"TA_STORES": ",".join(stores), "TA_LOCATION": location}
     if with_der:
         env["TA_WITH_DER"] = "1"
     full = {**os.environ, **env}
@@ -130,6 +132,14 @@ def main() -> int:
         "--store", action="append", choices=DEFAULT_STORES, help="repeatable"
     )
     parser.add_argument(
+        "--location",
+        choices=("LocalMachine", "CurrentUser"),
+        default="LocalMachine",
+        help="which hive to read. CurrentUser\\Root is where a user-installed root lands, and that "
+        "is the one an incident needs to know about: it applies to this user's browsers and "
+        "nothing else on the machine, and the machine-level artifact cannot see it.",
+    )
+    parser.add_argument(
         "--with-der", action="store_true", help="write the certificates too"
     )
     parser.add_argument(
@@ -149,8 +159,12 @@ def main() -> int:
         )
         return 3
     stores = args.store or list(DEFAULT_STORES)
+    # The hive belongs in the artifact's name and program: a user-installed root and a machine-installed
+    # one are different claims about different blast radii, and writing them to the same file would
+    # quietly replace one with the other.
+    hive = "machine" if args.location == "LocalMachine" else "user"
 
-    rows = read_store(stores, args.with_der)
+    rows = read_store(stores, args.with_der, args.location)
     if not rows:
         print("the provider returned no anchors; nothing is claimed")
         return 1
@@ -192,10 +206,11 @@ def main() -> int:
     doc = {
         "artifact": "trustatlas.store.collect",
         "version": 1,
-        "program": "Windows/schannel machine store",
+        "program": f"Windows/schannel {hive} store",
         "retrieved_at": _now(),
         "provenance": {
-            "method": "powershell.exe -NoProfile Cert:\\LocalMachine\\<store>",
+            "method": f"powershell.exe -NoProfile Cert:\\{args.location}\\<store>",
+            "location": args.location,
             "host": platform.system().lower() + "/" + platform.release(),
             "stores": stores,
             "certificates_written": bool(args.with_der),
@@ -229,7 +244,7 @@ def main() -> int:
 
     out_dir = Path(args.data) / "store"
     out_dir.mkdir(parents=True, exist_ok=True)
-    dest = out_dir / "windows.machine.json"
+    dest = out_dir / f"windows.{hive}.json"
     dest.write_bytes((json.dumps(doc, indent=1) + "\n").encode("utf-8"))
 
     print(f"{len(anchors)} anchors, {len(by_hash)} distinct certificates -> {dest}")

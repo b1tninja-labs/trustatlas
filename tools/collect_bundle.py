@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import ssl
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
@@ -77,6 +78,12 @@ def index_pem(
     chunks = text.split(BEGIN)
     for previous, block in zip(chunks, chunks[1:]):
         body, _, _ = block.partition(END)
+        # Only the text after the previous block's END marker describes this one. Without that cut, a
+        # bundle with no per-block comments -- node's compiled-in set -- labels every block after the
+        # first with the trailing "-----END CERTIFICATE-----" line: measured 144 of 145 anchors
+        # "named", each name a PEM delimiter. curl and certifi hide the defect because their "# Subject:"
+        # headers are found first on the way backwards.
+        header = previous.rpartition(END)[2]
         blocks += 1
         try:
             der = base64.b64decode("".join(body.split()), validate=True)
@@ -97,7 +104,7 @@ def index_pem(
         # certificate, and 120 of them agreeing tests the collector in a way no fixture-based unit
         # test can. The other lines name it, which is a string in the file, not a parsed field.
         label, alias, fingerprint = None, None, None
-        for line in reversed(previous.splitlines()):
+        for line in reversed(header.splitlines()):
             stripped = line.strip().lstrip("#").strip()
             low = stripped.lower()
             if "fingerprint" in low:
@@ -136,7 +143,12 @@ def index_pem(
                 # as the name and stops before it ever reaches "Alias name:", which is what the first run of
                 # collect_java.py did: 109 entries, every one labelled with a date.
                 continue
-            if any(c.isalpha() for c in stripped) and label is None and alias is None:
+            if (
+                "-----" not in stripped
+                and any(c.isalpha() for c in stripped)
+                and label is None
+                and alias is None
+            ):
                 label = stripped
                 break
         entry: dict[str, object] = {
@@ -183,9 +195,57 @@ def main() -> int:
         default=None,
         help="fetch this PEM bundle instead (the image has no certifi package and will not grow one)",
     )
+    parser.add_argument(
+        "--reader",
+        default=None,
+        help="an executable that prints PEM on stdout -- the store's OWN reader (keytool, node, "
+        "python -c), which is how this file avoids implementing anyone's trust format",
+    )
+    parser.add_argument(
+        "--reader-arg",
+        action="append",
+        default=[],
+        dest="reader_args",
+        help="argument for --reader, repeated. Passed as argv, never through a shell.",
+    )
+    parser.add_argument(
+        "--reader-name-key",
+        default="subject",
+        dest="reader_name_key",
+        help='what to call the label a reader prints above a block: "alias" for keytool nicknames',
+    )
     args = parser.parse_args()
 
-    if args.url:
+    # Three sources, one hasher. A store is only comparable with another store if both digests come
+    # from the same code, which is why readers reuse index_pem rather than shipping their own split.
+    if args.reader:
+        argv = [args.reader, *args.reader_args]
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=300)  # noqa: S603
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"reader could not run: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+        if done.returncode != 0:
+            detail = (done.stderr or done.stdout).strip()[:300]
+            print(
+                f"reader {argv[0]} exited {done.returncode}: {detail}", file=sys.stderr
+            )
+            print(
+                "A reader that will not speak is a fact about the host; nothing was written.",
+                file=sys.stderr,
+            )
+            return 1
+        text = done.stdout
+        origin: dict[str, object] = {
+            "reader": argv,
+            "reader_stderr": (done.stderr or "").strip()[:400],
+            "pem_sha256": hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(),
+            "method": (
+                f"asked the store's own reader ({argv[0]}) for PEM on stdout, then "
+                "collect_bundle.index_pem: split CERTIFICATE blocks, base64-decode, SHA-256 the DER"
+            ),
+        }
+    elif args.url:
         raw_dir = Path(args.data) / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         path = raw_dir / f"{args.program}.pem"
@@ -196,16 +256,25 @@ def main() -> int:
         ).read(32 * 1024 * 1024 + 1)
         path.write_bytes(payload)
         text = payload.decode("utf-8", errors="replace")
-        fetched = args.url
+        origin = {
+            "url": args.url,
+            "cached_at": str(path),
+            "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER",
+        }
     else:
         path = bundle_path(args.program, args.path)
         if path is None or not path.is_file():
             print(f"no bundle at {path}", file=sys.stderr)
             return 1
         text = path.read_text(encoding="utf-8", errors="replace")
-        fetched = None
+        origin = {
+            "path": str(path),
+            "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER",
+        }
 
-    seen, counts = index_pem(text, program=args.program)
+    seen, counts = index_pem(text, program=args.program, name_key=args.reader_name_key)
 
     doc = {
         "artifact": "trustatlas.bundle.collect",
@@ -215,10 +284,7 @@ def main() -> int:
             timespec="seconds"
         ),
         "provenance": {
-            "path": str(path),
-            "url": fetched,
-            "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER",
+            **origin,
             "note": (
                 "hashes and counts only: no subject, no SPKI, no validity. A certificate's identity"
                 " here is its SHA-256 of DER, which cannot connect two certificates that share a key."

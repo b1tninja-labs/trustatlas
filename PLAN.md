@@ -114,6 +114,31 @@ soft-404 earlier: an environment you already trust stops testing you.
 
 
 
+## Which client reads which store, and where that is written down
+
+`tools/store_registry.py` holds the codified answer: 19 rows, one per **store**, each naming its location, the
+reader that can print it without this repository implementing anyone's PKI, where its contents came from, and
+whether that claim is `measured` here, `documented` upstream, or `guessed`. `--probe` reads the table against the
+host it runs on and writes `store/registry.status.json`: reader present, its version, when the file or binary last
+changed, how many anchors the last artifact counted, and when that was taken.
+
+The table exists because of a category error that is easy to make and hard to see. **A client is not a store.**
+Chrome and Edge on Windows read `Cert:\LocalMachine\Root` plus `AuthRoot`; on macOS and iOS they read
+Security.framework, as Safari does; on Linux they read NSS, as Firefox does. Recording twelve clients as twelve
+stores would describe one machine's roots twelve times, so clients are an attribute of a store row instead.
+Safari on Windows is not in the table at all: that build was discontinued in 2012, and a map that keeps dead
+clients as live stores quietly miscounts the present.
+
+Two properties the surface will want are fields rather than guesses. `last_change` is the mtime of the cacerts
+file, of the node binary, of certifi's data file — which is how "when was this store last updated" gets answered
+without pretending to know a vendor's release schedule. And `confidence` keeps an unverified row from reading like
+a measured one: `.NET`, Go and PHP are in the table marked `guessed`, which is an invitation to test them and not
+a claim about them.
+
+The registry is data plus a prober, and that is the whole of it. There is no renderer here, and the UI idea belongs
+behind P5's gate: a surface may show a store's status only once an artifact states it, which is why
+`registry.status.json` is the deliverable rather than a page.
+
 ## The two bundles that are called the same thing are ten certificates apart
 
 Both sides now carry names from their own files, so the difference is not a count but a list.
