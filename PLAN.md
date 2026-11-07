@@ -27,6 +27,43 @@ DER files):
   EKU list would have come back as that string and the honest reading would have been "no anchor has an EKU" — a
   serializer artifact dressed as a fact about the store. `-Depth 6` is now explicit.
 
+## The Microsoft program, reached from the container, and deliberately not counted
+
+The membership API I expected at `learn.microsoft.com/api/membership/rootcert` **404s**, as does
+`microsoft.com/pkiops/certs/RootCerts.json` — both were recollections, and probing cost one command each.
+What actually exists is Microsoft's published CTL, and it is reachable from a Linux container:
+
+```
+authrootstl.cab          80,353 octets  application/vnd.ms-cab-compressed  sha256 c0aa761f…  STABLE
+disallowedcertstl.cab     5,652 octets  application/vnd.ms-cab-compressed  sha256 1f2719b1…  STABLE
+```
+
+Both over **plain HTTP** — `https://` on that host fails — and stable across two fetches, which is
+`probe_sources.py`'s own verdict (`80353 B, 0 PEM, stable` via `--only`, so no partial sweep moved
+`catalog.json`). `collect_ctl.py` fetches, checks the `MSCF` magic, and hashes. It reports
+`certificates_enumerated: 0` and `decoded: false`, because enumerating CTL entries means unpacking a CAB
+and walking signed trust blobs in a Microsoft binary format, and that is `pkix`'s work. A membership count
+written here would be a guess with a JSON wrapper.
+
+The pin is not a placeholder for the real answer. These URLs carry **no transport security**, so the only
+integrity protection is the signature *inside* the CAB — precisely the check `pkix` has to implement, and
+until it does, "bytes as delivered over HTTP on 2026-11-07, SHA-256 c0aa761f…" is the strongest honest
+statement available about the Windows program. A later decoder can at least prove which bytes it was fed.
+The container re-fetched with `--refresh` and reproduced both hashes, so the pin survives the environment
+change.
+
+`disallowedcertstl.cab` is the blocklist, and it is the artifact the site is meant to *render* — the
+eMudhra-era guidance asks users to disable a root, and a pinned, dated Microsoft blocklist answers whether
+the program moved, independently of any machine's store. Rendering it is not the same as authoring one:
+`keyproof` owns compromise claims, and nothing here makes one.
+
+Remaining obligation, stated where the SDK table can see it: **`pkix` needs a CTL reader** — CAB container,
+CTL records, and the Authenticode signature over them. With that, the Microsoft program becomes a first
+class joinable set next to NSS, curl and certifi, and the laptop-only `collect_store.py` stops being the
+only way to say anything about Windows trust at all.
+
+
+
 ## Where each collector runs, because the target is a Linux container
 
 `Dockerfile` is `python:3.12-slim` and AWS Fargate runs Linux containers only, so a tool that shells out to

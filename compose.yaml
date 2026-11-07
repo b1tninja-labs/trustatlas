@@ -25,7 +25,8 @@ services:
         python tools/collect_certdata.py --data /data --refresh &&
         python tools/collect_bundle.py --data /data --program curl --url https://curl.se/ca/cacert.pem &&
         python tools/join_programs.py --data /data --a mozilla.nss.json --b curl.json --out
-        /data/store/nss-x-curl.json
+        /data/store/nss-x-curl.json &&
+        python tools/collect_ctl.py --data /data --refresh
     volumes:
       - ${TRUSTATLAS_DATA:-M:/trustatlas}:/data
     environment:

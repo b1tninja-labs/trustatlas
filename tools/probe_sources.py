@@ -56,6 +56,24 @@ SOURCES: list[tuple[str, str, list[str]]] = [
             "https://ccadb.my.salesforce-sites.com/ccadb/AllCertificateRecordsCSVFormat",
         ],
     ),
+    (
+        "windows.authroot_ctl",
+        "program",
+        [
+            # Plain HTTP, and the only published form of the Microsoft program reachable from a
+            # container. Stable across two fetches on 2026-11-07; the integrity protection is the
+            # signature inside the CAB, which nothing decodes yet, so the catalog pins bytes rather
+            # than claiming membership.
+            "http://www.download.windowsupdate.com/msdownload/update/v3/static/trustedr/en/authrootstl.cab",
+        ],
+    ),
+    (
+        "windows.disallowed_ctl",
+        "program",
+        [
+            "http://www.download.windowsupdate.com/msdownload/update/v3/static/trustedr/en/disallowedcertstl.cab",
+        ],
+    ),
     ("curl.mozilla_bundle", "bundle", ["https://curl.se/ca/cacert.pem"]),
     (
         "python.certifi",
