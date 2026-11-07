@@ -81,6 +81,18 @@ REGISTRY: tuple[dict[str, Any], ...] = (
         "note": "52 entries. Where cross-signing lives on Windows, and why retiring a root can go unnoticed by clients holding the twin.",
     },
     {
+        "id": "windows.root.physical",
+        "kind": "os-store-backing",
+        "os": ("windows",),
+        "location": r"HKLM\SOFTWARE\Microsoft\SystemCertificates\ROOT\Certificates (machine) and %APPDATA%\Microsoft\SystemCertificates\ROOT (user)",
+        "reader": ["certutil", "-store", "Root"],
+        "origin": "what is actually stored, before any store linking is resolved",
+        "artifact": None,
+        "clients": ("certutil", "anyone auditing what an installer really wrote"),
+        "confidence": MEASURED,
+        "note": "Added because the closure rows disagreed by 4 and every disagreement traced to this: ROOT physically holds 16 certificates, AuthRoot 52, CA 7. certutil reports the 16; PowerShell's Root listing is 16 union 52 = 68 by thumbprint containment; Python's context is a purpose-filtered closure that excludes signing-only entries and admits linked contents, 72 with 18 that are issuing CAs. So 'the Windows root store has N anchors' is unanswerable without naming the API, and the incident question 'did something install a root' is answered HERE (0 physical entries in HKCU on this host), not in a provider listing that follows links and would show a mirror.",
+    },
+    {
         "id": "windows.disallowed",
         "kind": "os-store",
         "os": ("windows",),
@@ -112,7 +124,7 @@ REGISTRY: tuple[dict[str, Any], ...] = (
         "artifact": "python.schannel.json",
         "clients": ("CPython stdlib ssl", "pip", "requests", "httpx"),
         "confidence": MEASURED,
-        "note": "72 anchors where PowerShell lists 68 in the same hive; 54 shared. The 14 Python omits are code-signing and time-stamping roots. The 18 it adds are not anchors by any reading: RapidSSL TLS RSA CA G1, GoDaddy TLS Intermediate CA DV - R1v1, Microsoft Update Secure Server CA 2.1, Microsoft Secure Server CA 2011, Microsoft Code Signing PCA 2024, a Microsoft TLS OCSP responder. Mechanism unresolved; consequence is not.",
+        "note": "72 anchors where PowerShell lists 68 in the same hive; 54 shared. The 14 Python omits are code-signing and time-stamping roots. The 18 it adds are not anchors by any reading: RapidSSL TLS RSA CA G1, GoDaddy TLS Intermediate CA DV - R1v1, Microsoft Update Secure Server CA 2.1, Microsoft Secure Server CA 2011, Microsoft Code Signing PCA 2024, a Microsoft TLS OCSP responder. The mechanism is a store graph, not a broken client: ROOT physically holds 16 certificates (certutil reports exactly these), AuthRoot 52, and PowerShell's Root listing is precisely their union of 68 -- verified by thumbprint containment, not arithmetic. crypt32 with a purpose filter then drops the signing-only entries and admits linked contents instead. 11 of the 18 are still unattributed, pending an enumeration of the store's link list rather than another guess. What survives either reading: an anchor set containing issuing CAs lets a chain terminate at an intermediate.",
     },
     {
         "id": "node.bundled",
