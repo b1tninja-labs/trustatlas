@@ -57,10 +57,15 @@ eMudhra-era guidance asks users to disable a root, and a pinned, dated Microsoft
 the program moved, independently of any machine's store. Rendering it is not the same as authoring one:
 `keyproof` owns compromise claims, and nothing here makes one.
 
-Remaining obligation, stated where the SDK table can see it: **`pkix` needs a CTL reader** — CAB container,
-CTL records, and the Authenticode signature over them. With that, the Microsoft program becomes a first
-class joinable set next to NSS, curl and certifi, and the laptop-only `collect_store.py` stops being the
-only way to say anything about Windows trust at all.
+Obligation now **filed**, not just noted: `pkix/ROADMAP.md` gained milestone **M7** and three `[ ]`
+rows — `cab.member()`, `ctl.root_program()`, `ctl.signed_by_microsoft()` — backed by `pkix/cab.py` and
+`pkix/ctl.py` stubs that raise rather than return empty lists, because "the Windows program trusts
+nothing" and "this build cannot read the CTL" are different claims and only one is true. `pkix`'s own
+gate (`tests/test_roadmap_rows.py::test_every_row_names_a_real_callable`) failed the moment the rows
+existed without the callables — a matrix row that names nothing is a wish, and the project enforces
+that rather than trusting the document. With M7 landed, the Microsoft program becomes a first class
+joinable set next to NSS, curl and certifi, and the laptop-only `collect_store.py` stops being the only
+way to say anything about Windows trust at all.
 
 
 
