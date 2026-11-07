@@ -139,6 +139,23 @@ The registry is data plus a prober, and that is the whole of it. There is no ren
 behind P5's gate: a surface may show a store's status only once an artifact states it, which is why
 `registry.status.json` is the deliverable rather than a page.
 
+## One store, three answers, and a hazard that follows
+
+Measured on a single Windows host on 2026-11-07, `Cert:\LocalMachine\Root` is **68**, `certutil -store Root` is
+**16**, and Python's `ssl.create_default_context()` is **72**. None of them is wrong. ROOT physically contains 16
+certificates; AuthRoot contains 52; the PowerShell provider's listing is exactly their union, confirmed by
+thumbprint containment. Python's 72 is that set minus the 14 entries that fail its serverAuth purpose filter,
+plus **18 taken from `Cert:\CurrentUser\CA`**, because CPython's `load_default_certs` iterates
+`_windows_cert_stores = ('CA', 'ROOT')` and loads each entry as an anchor. The CA store is where Windows caches
+intermediates it fetched while validating chains, so on that machine 18 issuing CAs -- including an OCSP
+responder certificate -- are trust anchors for every `create_default_context()` client: pip, requests, httpx.
+
+Two things follow for the map. First, a store row without a named reader is not a fact: "how many roots does
+Windows trust" has no answer until someone says which API answered. Second, the anchor set of a runtime can be a
+function of that machine's connection history, which is the clearest argument this project has for artifacts
+taken per host rather than a canonical list asserted in prose. The registry carries this as
+`windows.root.physical` and `windows.ca.user`, and the counts come from artifacts, not from this paragraph.
+
 ## The two bundles that are called the same thing are ten certificates apart
 
 Both sides now carry names from their own files, so the difference is not a count but a list.

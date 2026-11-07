@@ -35,6 +35,10 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_STORES = ("Root", "AuthRoot", "Disallowed")
+# Collectable, but not collected by default: adding CA to the default set would change what the machine
+# artifact claims (its counts and every join computed from it), and CA is only interesting because one
+# runtime turns its contents into trust anchors.
+COLLECTABLE_STORES = DEFAULT_STORES + ("CA", "My", "Trust")
 
 # Ask Windows PowerShell's certificate provider for each anchor and emit one JSON object. The fields
 # are what Windows computes and reports; nothing here is derived from the DER bytes themselves.
@@ -129,7 +133,7 @@ def main() -> int:
     )
     parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument(
-        "--store", action="append", choices=DEFAULT_STORES, help="repeatable"
+        "--store", action="append", choices=COLLECTABLE_STORES, help="repeatable"
     )
     parser.add_argument(
         "--location",
@@ -206,7 +210,11 @@ def main() -> int:
     doc = {
         "artifact": "trustatlas.store.collect",
         "version": 1,
-        "program": f"Windows/schannel {hive} store",
+        "program": (
+            f"Windows/schannel {hive} store"
+            if stores == list(DEFAULT_STORES)
+            else f"Windows/schannel {hive} store: {'+'.join(stores)}"
+        ),
         "retrieved_at": _now(),
         "provenance": {
             "method": f"powershell.exe -NoProfile Cert:\\{args.location}\\<store>",
@@ -244,7 +252,15 @@ def main() -> int:
 
     out_dir = Path(args.data) / "store"
     out_dir.mkdir(parents=True, exist_ok=True)
-    dest = out_dir / f"windows.{hive}.json"
+    # Non-default store selections get their own file. `--location CurrentUser --store CA` landing on
+    # `windows.user.json` would have silently replaced the user ROOT artifact collected an hour earlier,
+    # and two artifacts with the same name are read as one store by anything downstream.
+    slug = (
+        ""
+        if stores == list(DEFAULT_STORES)
+        else "-" + "-".join(store.lower() for store in stores)
+    )
+    dest = out_dir / f"windows.{hive}{slug}.json"
     dest.write_bytes((json.dumps(doc, indent=1) + "\n").encode("utf-8"))
 
     print(f"{len(anchors)} anchors, {len(by_hash)} distinct certificates -> {dest}")

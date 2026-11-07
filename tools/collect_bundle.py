@@ -22,6 +22,7 @@ import base64
 import binascii
 import datetime
 import hashlib
+import io
 import json
 import os
 import ssl
@@ -181,6 +182,63 @@ def index_pem(
     return seen, counts
 
 
+def pem_from_tar(payload: bytes) -> tuple[str, int, int]:
+    """Concatenate the PEM spans of a gzipped tar, for stores shipped as one-anchor-per-file.
+
+    Returns the text, how many members held a certificate, and how many carried trailing text beyond the PEM
+    that was dropped. Android's AOSP bundle is exactly this shape: a directory of `<subject hash>.0` files,
+    each a PEM followed by an OpenSSL text dump. Gitiles serves it as `+archive/<ref>/files.tar.gz`, so the
+    store arrives as one archive instead of 140 URLs. Nothing here parses a certificate: the archive is a
+    container for PEM, and `index_pem` still does the only hashing in the program.
+    """
+    import tarfile
+
+    text: list[str] = []
+    members = 0
+    dumped = 0
+    end_marker = "-----END CERTIFICATE-----"
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            name = member.name.lower()
+            if not (
+                name.endswith(".pem") or name.endswith(".0") or name.endswith(".crt")
+            ):
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            chunk = handle.read().decode("utf-8", errors="replace")
+            blocks = 0
+            while "-----BEGIN CERTIFICATE-----" in chunk:
+                start = chunk.index("-----BEGIN CERTIFICATE-----")
+                stop = chunk.find(end_marker, start)
+                if stop < 0:
+                    break
+                pem = chunk[start : stop + len(end_marker)] + "\n"
+                if blocks == 0:
+                    # AOSP filenames are OpenSSL subject hashes (`0a775be3.0`): an identifier, not a
+                    # distinguished name, so it goes in the alias field the way keytool's does.
+                    text.append(f"Alias name: {member.name}\n{pem}")
+                else:
+                    text.append(pem)
+                blocks += 1
+                chunk = chunk[stop + len(end_marker) :]
+            if blocks == 0:
+                continue
+            if chunk.strip():
+                # AOSP ships more than PEM: each file appends an OpenSSL `Certificate:` text dump whose
+                # `Subject:` line describes the certificate it sits under. Left in place, that line is the
+                # last text before the next BEGIN marker, so the label walk hands certificate N's subject to
+                # certificate N+1. Measured: 148 of 149 Android names were wrong this way, while every digest
+                # was right, because digests never look at the text -- which is exactly how it hid. Only the
+                # PEM spans are kept; the count of dropped dumps is recorded in provenance.
+                dumped += 1
+            members += 1
+    return "\n".join(text), members, dumped
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -194,6 +252,11 @@ def main() -> int:
         "--url",
         default=None,
         help="fetch this PEM bundle instead (the image has no certifi package and will not grow one)",
+    )
+    parser.add_argument(
+        "--tar",
+        action="store_true",
+        help="the --url payload is a gzipped archive of one-anchor-per-file (Android's AOSP bundle)",
     )
     parser.add_argument(
         "--reader",
@@ -248,19 +311,36 @@ def main() -> int:
     elif args.url:
         raw_dir = Path(args.data) / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        path = raw_dir / f"{args.program}.pem"
+        path = raw_dir / (
+            f"{args.program}.tar.gz" if args.tar else f"{args.program}.pem"
+        )
         payload = urllib.request.urlopen(  # noqa: S310
             urllib.request.Request(args.url, headers={"User-Agent": UA}),  # noqa: S310
             timeout=90.0,
             context=ssl.create_default_context(),
         ).read(32 * 1024 * 1024 + 1)
         path.write_bytes(payload)
-        text = payload.decode("utf-8", errors="replace")
+        if args.tar:
+            text, members, dumped = pem_from_tar(payload)
+            origin_extra = {
+                "archive_members_with_pem": members,
+                "trailing_text_dumps_dropped": dumped,
+                "method": (
+                    "fetched a gzipped archive, kept only the PEM spans of its members (one anchor per "
+                    "file, with any trailing OpenSSL text dump dropped), then "
+                    "collect_bundle.index_pem: split CERTIFICATE blocks, base64-decode, SHA-256 the DER"
+                ),
+            }
+        else:
+            text = payload.decode("utf-8", errors="replace")
+            origin_extra = {
+                "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER"
+            }
         origin = {
             "url": args.url,
             "cached_at": str(path),
             "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER",
+            **origin_extra,
         }
     else:
         path = bundle_path(args.program, args.path)
