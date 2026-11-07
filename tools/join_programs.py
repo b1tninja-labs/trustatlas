@@ -43,6 +43,19 @@ def index(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(r.get("sha256", "")).lower(): r for r in rows if r.get("sha256")}
 
 
+def is_delegator(row: dict[str, Any], bit: str) -> bool:
+    """Whether the program lets this anchor issue under one trust bit.
+
+    NSS states bits per object (`SERVER_AUTH: TRUSTED_DELEGATOR`), which is why the same file can carry
+    an S/MIME-only root and a TLS root and count both. Bundles and keystores state no bits at all, so
+    an artifact that says nothing is never filtered by this -- absence of a claim is not a claim of
+    exclusion, and treating it as one would silently delete half a trust set.
+    """
+    trust = row.get("trust") or {}
+    value = trust.get(bit)
+    return isinstance(value, str) and value.endswith("_DELEGATOR")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -55,11 +68,35 @@ def main() -> int:
     parser.add_argument(
         "--only", default="both", choices=("both", "a", "b"), help="list remainders"
     )
+    parser.add_argument(
+        "--a-trust",
+        default=None,
+        help="restrict A to anchors the program trusts as delegators under this bit, e.g. SERVER_AUTH",
+    )
+    parser.add_argument(
+        "--b-trust",
+        default=None,
+        help="restrict B the same way. Comparing a TLS store with an all-bits program list without "
+        "this overstates the disagreement.",
+    )
     parser.add_argument("--out", default=None, help="write the join artifact here")
     args = parser.parse_args()
 
     doc_a, doc_b = load(args.data, args.a), load(args.data, args.b)
     a, b = index(doc_a), index(doc_b)
+    totals = {"a": len(a), "b": len(b)}
+    for bit, side in ((args.a_trust, "a"), (args.b_trust, "b")):
+        if not bit:
+            continue
+        kept = {
+            k: v for k, v in (a if side == "a" else b).items() if is_delegator(v, bit)
+        }
+        (a if side == "a" else b).clear()
+        (a if side == "a" else b).update(kept)
+        print(
+            f"  {side} filtered to {len(kept)} anchors trusted as {bit} delegators "
+            f"(of {totals[side]}); the rest are trusted for other purposes or state nothing"
+        )
     shared = sorted(set(a) & set(b))
     only_a = sorted(set(a) - set(b))
     only_b = sorted(set(b) - set(a))
@@ -91,7 +128,15 @@ def main() -> int:
     if not named or args.only == "b":
         for digest in only_b[:20]:
             row = b[digest]
-            name = row.get("subject") or row.get("labels") or digest[:16] + "..."
+            # A bundle names nothing, but a keystore carries an alias and a store carries labels, and
+            # neither is a subject. Falling back to the digest prefix here would hide the one name this
+            # side has, so every non-subject name the artifacts do carry is tried, in that order.
+            name = (
+                row.get("subject")
+                or row.get("alias")
+                or row.get("labels")
+                or digest[:16] + "..."
+            )
             print(f"  only in {doc_b.get('program')}: {name}")
         if len(only_b) > 20:
             print(
@@ -107,6 +152,12 @@ def main() -> int:
                 "a": args.a,
                 "b": args.b,
                 "key": "certificate SHA-256 of DER",
+                "trust_filter": {
+                    side: bit
+                    for side, bit in (("a", args.a_trust), ("b", args.b_trust))
+                    if bit
+                },
+                "totals_before_filter": totals,
                 "limit": (
                     "two certificates holding one key are two entries, so the overlap understates "
                     "programs that differ only in which certificate of a key they ship; SPKI "

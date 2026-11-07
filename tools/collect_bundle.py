@@ -21,6 +21,7 @@ import argparse
 import base64
 import binascii
 import datetime
+import hashlib
 import json
 import os
 import ssl
@@ -51,44 +52,24 @@ def bundle_path(program: str, explicit: str | None) -> Path | None:
     return None
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
-    parser.add_argument("--program", default="certifi")
-    parser.add_argument(
-        "--path", default=None, help="PEM bundle to read instead of a default"
-    )
-    parser.add_argument(
-        "--url",
-        default=None,
-        help="fetch this PEM bundle instead (the image has no certifi package and will not grow one)",
-    )
-    args = parser.parse_args()
+def index_pem(
+    text: str, *, program: str, name_key: str = "subject"
+) -> tuple[dict[str, dict[str, object]], dict[str, int]]:
+    """Split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER, and count what was seen.
 
-    import hashlib
+    One implementation on purpose. `join_programs.py` compares SHA-256 of DER across programs, so two
+    collectors that derive the digest slightly differently would report an overlap that is a property of
+    the code rather than of the trust sets. Any new reader imports this rather than growing its own split.
 
-    if args.url:
-        raw_dir = Path(args.data) / "raw"
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        path = raw_dir / f"{args.program}.pem"
-        payload = urllib.request.urlopen(  # noqa: S310
-            urllib.request.Request(args.url, headers={"User-Agent": UA}),  # noqa: S310
-            timeout=90.0,
-            context=ssl.create_default_context(),
-        ).read(32 * 1024 * 1024 + 1)
-        path.write_bytes(payload)
-        text = payload.decode("utf-8", errors="replace")
-        fetched = args.url
-    else:
-        path = bundle_path(args.program, args.path)
-        if path is None or not path.is_file():
-            print(f"no bundle at {path}", file=sys.stderr)
-            return 1
-        text = path.read_text(encoding="utf-8", errors="replace")
-        fetched = None
+    `name_key` says what the text above a block is allowed to be called. In a curl or certifi bundle the
+    maintainer's own comment carries a `subject:` line; in `keytool -list -rfc` output the same position
+    holds an *alias*, which is a nickname the keystore chose and not a subject. Recording an alias as a
+    subject would be the exact kind of overstatement this repository's honesty rule refuses, so the caller
+    decides the field name and the value is carried verbatim either way.
 
+    Returns the digest index and the counts; nothing here names a subject, an SPKI or a validity, because
+    naming those is `asn1core`'s job and not this file's.
+    """
     seen: dict[str, dict[str, object]] = {}
     duplicates = 0
     malformed = 0
@@ -115,7 +96,7 @@ def main() -> int:
         # equals the SHA-256 computed here, the PEM split and base64 decode are right for that
         # certificate, and 120 of them agreeing tests the collector in a way no fixture-based unit
         # test can. The other lines name it, which is a string in the file, not a parsed field.
-        label, fingerprint = None, None
+        label, alias, fingerprint = None, None, None
         for line in reversed(previous.splitlines()):
             stripped = line.strip().lstrip("#").strip()
             low = stripped.lower()
@@ -125,23 +106,106 @@ def main() -> int:
                         stripped.split(":", 1)[-1].strip().replace(":", "").lower()
                     )
                 continue
-            if low.startswith("subject:") and label is None:
+            # Two labels, kept apart on purpose. `subject:` in a curl or certifi header and `Owner:` in
+            # keytool output are the same claim -- the holder's distinguished name, printed as a string by
+            # whoever assembled the file -- while `Alias name:` in keytool output is a nickname the keystore
+            # chose. Recording an alias as a subject would name a certificate something it does not say.
+            if low.startswith(("subject:", "owner:")) and label is None:
                 label = stripped.split(":", 1)[1].strip()
                 continue
-            if low.startswith(("issuer:", "serial:", "validity:")) or len(stripped) < 5:
+            if low.startswith(("alias name:", "alias:")) and alias is None:
+                alias = stripped.split(":", 1)[1].strip()
                 continue
-            if any(c.isalpha() for c in stripped) and label is None:
+            if (
+                low.startswith(
+                    (
+                        "issuer:",
+                        "serial:",
+                        "validity:",
+                        "valid from:",
+                        "creation date:",
+                        "entry type:",
+                        "signature algorithm:",
+                        "public key",
+                    )
+                )
+                or len(stripped) < 5
+            ):
+                # "creation date:" and "entry type:" are JDK 26 keytool boilerplate between the alias and
+                # the PEM block. Without skipping them the fallback below takes "Creation date: Nov 7, 2026"
+                # as the name and stops before it ever reaches "Alias name:", which is what the first run of
+                # collect_java.py did: 109 entries, every one labelled with a date.
+                continue
+            if any(c.isalpha() for c in stripped) and label is None and alias is None:
                 label = stripped
                 break
-        entry = {
+        entry: dict[str, object] = {
             "sha256": digest,
             "der_octets": len(der),
-            "subject": label,
-            "store": args.program,
+            name_key: label,
+            "store": program,
         }
+        if name_key != "subject":
+            entry["subject"] = label
+            entry["alias"] = alias
         if fingerprint and len(fingerprint) == 64:
             entry["bundle_fingerprint_agrees"] = fingerprint == digest
         seen[digest] = entry
+
+    counts = {
+        "pem_blocks": blocks,
+        "distinct_certificates": len(seen),
+        "duplicate_blocks": duplicates,
+        "malformed_blocks": malformed,
+        "fingerprint_checked": sum(
+            1 for c in seen.values() if "bundle_fingerprint_agrees" in c
+        ),
+        "fingerprint_agrees": sum(
+            1 for c in seen.values() if c.get("bundle_fingerprint_agrees")
+        ),
+        "named": sum(1 for c in seen.values() if c.get(name_key)),
+        "subject_named": sum(1 for c in seen.values() if c.get("subject")),
+    }
+    return seen, counts
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
+    parser.add_argument("--program", default="certifi")
+    parser.add_argument(
+        "--path", default=None, help="PEM bundle to read instead of a default"
+    )
+    parser.add_argument(
+        "--url",
+        default=None,
+        help="fetch this PEM bundle instead (the image has no certifi package and will not grow one)",
+    )
+    args = parser.parse_args()
+
+    if args.url:
+        raw_dir = Path(args.data) / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        path = raw_dir / f"{args.program}.pem"
+        payload = urllib.request.urlopen(  # noqa: S310
+            urllib.request.Request(args.url, headers={"User-Agent": UA}),  # noqa: S310
+            timeout=90.0,
+            context=ssl.create_default_context(),
+        ).read(32 * 1024 * 1024 + 1)
+        path.write_bytes(payload)
+        text = payload.decode("utf-8", errors="replace")
+        fetched = args.url
+    else:
+        path = bundle_path(args.program, args.path)
+        if path is None or not path.is_file():
+            print(f"no bundle at {path}", file=sys.stderr)
+            return 1
+        text = path.read_text(encoding="utf-8", errors="replace")
+        fetched = None
+
+    seen, counts = index_pem(text, program=args.program)
 
     doc = {
         "artifact": "trustatlas.bundle.collect",
@@ -160,27 +224,18 @@ def main() -> int:
                 " here is its SHA-256 of DER, which cannot connect two certificates that share a key."
             ),
         },
-        "counts": {
-            "pem_blocks": blocks,
-            "distinct_certificates": len(seen),
-            "duplicate_blocks": duplicates,
-            "malformed_blocks": malformed,
-            "fingerprint_checked": sum(
-                1 for c in seen.values() if "bundle_fingerprint_agrees" in c
-            ),
-            "fingerprint_agrees": sum(
-                1 for c in seen.values() if c.get("bundle_fingerprint_agrees")
-            ),
-            "named": sum(1 for c in seen.values() if c.get("subject")),
-        },
+        "counts": counts,
         "certificates": sorted(seen.values(), key=lambda c: str(c["sha256"])),  # type: ignore[arg-type]
     }
     out = Path(args.data) / "store" / f"{args.program}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes((json.dumps(doc, indent=1) + "\n").encode("utf-8"))
     print(
-        f"{args.program}: {blocks} PEM blocks, {len(seen)} distinct certificates, {duplicates} duplicate"
-        f"{'s' if duplicates != 1 else ''}, {malformed} malformed -> {out}"
+        f"{args.program}: {counts['pem_blocks']} PEM blocks, "
+        f"{counts['distinct_certificates']} distinct certificates, "
+        f"{counts['duplicate_blocks']} duplicate"
+        f"{'s' if counts['duplicate_blocks'] != 1 else ''}, "
+        f"{counts['malformed_blocks']} malformed -> {out}"
     )
     checks = doc["counts"]
     print(

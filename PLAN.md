@@ -298,6 +298,22 @@ Cross-signs are not an anomaly to explain away; they are structural. And the sam
 Python's `certifi`, Java's `cacerts` and a dozen runtime bundles all derive from Mozilla's NSS built-ins.
 Anyone who can move a root in NSS has acted on clients Mozilla does not ship.
 
+**How far that sentence reaches was measured on 2026-11-07, and it reaches less far than it reads.**
+Derivation is a historical claim; membership is a present one, and the two come apart.
+`tools/collect_java.py` reads this machine's JDK 26.0.1 `cacerts` through Java's own `keytool` and hashes what
+it prints: **109 anchors**. Joined on certificate SHA-256 against the recorded `Mozilla/NSS built-ins`
+artifact, the overlap is **59 of 117** when NSS is filtered to the anchors it trusts to delegate for TLS
+(`join_programs.py --a-trust SERVER_AUTH`), and 76 of its 169 when it is not; the 17-anchor difference is
+anchors Java ships that NSS keeps solely for S/MIME or code signing. Java holds **50 anchors that NSS does not
+trust for TLS at all** — `verisignuniversalrootca`, `geotrustprimaryca`, `geotrustprimarycag2`,
+`thawteprimaryrootcag3`, `entrustrootcag2`, `starfieldclass2ca` and 44 more, all recorded in
+`java-x-nss.server-auth.json`. Neither store is a subset of the other, and the same verdict comes back against
+certifi, against curl, and against this machine's Windows root store.
+
+So inheritance stands as a claim about *origin* — these stores were assembled from Mozilla's list, and NSS
+decisions move them — and must never be read as *congruence*. That gap is not a footnote to the map: four
+stores on one machine, joined in an afternoon, disagree by fifty anchors. It is the map.
+
 So this artifact is a map of **two graphs** that nobody puts together: the derivation graph among stores (who
 copies whom, verified by hashing rather than asserted), and the issuance graph among certificates (which key
 is trusted via which issuer, cross-signs included). Overlay the second on the first and you get the only
