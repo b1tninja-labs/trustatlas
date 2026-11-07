@@ -113,6 +113,40 @@ soft-404 earlier: an environment you already trust stops testing you.
 
 
 
+## The two bundles that are called the same thing are ten certificates apart
+
+Both sides now carry names from their own files, so the difference is not a count but a list.
+**certifi (120) × curl (118): 114 shared, 6 only in certifi, 4 only in curl — neither a subset.**
+
+| Only in certifi (6) | Only in curl (4) |
+| --- | --- |
+| `emSign Root CA - C1` | `Telia RSA TLS Root CA v3` |
+| `emSign ECC Root CA - G3` | `Telia EC TLS Root CA v3` |
+| `emSign ECC Root CA - C3` | `SECOM TLS RSA Root CA 2024` |
+| `SecureSign Root CA12` | `SECOM TLS ECC Root CA 2024` |
+| `ePKI Root Certification Authority` | |
+| `Atos TrustedRoot 2011` | |
+
+The asymmetry has a shape worth stating precisely, because it is the useful kind:
+
+- **curl is quicker to add.** All four curl-only entries are 2024-generation roots (Telia v3, SECOM 2024).
+  A runtime pinned to certifi is missing four roots that curl already ships.
+- **certifi keeps and carries more.** Five of its six extras — the three `emSign`/eMudhra roots,
+  `SecureSign Root CA12`, `ePKI` — are in **no NSS built-in**, which is why curl (a strict subset of NSS,
+  118 of 118) does not have them. The sixth, `Atos TrustedRoot 2011`, *is* in NSS: curl dropped it,
+  certifi did not.
+- So the two failure modes are different. One bundle lags on additions; the other ships roots the program
+  it is said to mirror no longer carries. Neither is visible from either bundle's documentation, and both
+  were invisible until someone hashed the two against the program.
+
+**A verification asymmetry between the sources, recorded so it is not mistaken for equal rigour:**
+certifi states a SHA-256 of DER per block and 120 of 120 match what `collect_bundle.py` hashed, so its
+join key is externally confirmed. curl states names but **no fingerprints — 0 of 118 checked**. Its hashes
+are therefore produced by the same code and validated by nothing but itself. Same pipeline, different
+evidence, and the artifact says which is which (`fingerprint_checked`).
+
+
+
 ## Third program, and the derivation edge gets tested
 
 `collect_certdata.py` reads Mozilla's `certdata.txt` at its source — `CKA_LABEL`, `CKA_VALUE` as
