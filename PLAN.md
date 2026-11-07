@@ -179,12 +179,23 @@ answers that differently, which is why the map records the channel and not just 
 * **Windows** has no file channel: the list arrives through Windows Update, and `authroot.stl` needs the CTL
   decoder that lives in pkix. Validated by re-running the provider on the same machine, never by a URL.
 
-`tools/verify_provenance.py` is the validator and it is deliberately boring: 8 checks, each comparing two
-independent descriptions of the same material, exit code non-zero only where agreement is required. It carries
-one design rule that the rest of the project should keep. **Retain the raw payload**, because re-deriving the
-artifact from it is the only check on the extractor, and the extractor is where the mistakes hide: Android's
-mislabelled names were invisible to every cross-channel comparison and visible only to running the extractor
-again over bytes already on disk.
+`tools/verify_provenance.py` is the validator and it is deliberately boring: 11 checks, each comparing two
+independent descriptions of the same material (or recording whose hand the repository credits), exit code
+non-zero only where agreement is required. It carries one design rule that the rest of the project should
+keep. **Retain the raw payload**, because re-deriving the artifact from it is the only check on the extractor,
+and the extractor is where the mistakes hide: Android's mislabelled names were invisible to every cross-channel
+comparison and visible only to running the extractor again over bytes already on disk.
+
+Two answers came out of asking *by whom*, and both change how a reader should treat a mirror. The git mirror of
+Mozilla's list attributes certdata.txt to `updatebot-ci` ("Update NSS to 786a3904…", 2025-07-07), so the mirror
+records transport and not judgement: the person who decided to include or exclude an anchor is not recoverable
+from it, and its newest touch is sixteen months old, which corroborates the digest mismatch independently of any
+hash. certifi's history is the whole life-cycle of a bad edit in five days — `alex` "Remove emsign (#437)" on
+2026-10-18, `nneul` "Restore unaffected emSign roots (#439) (#440)" on 2026-10-20, `github-actions[bot]` cutting
+the 2026.10.23 release two days later — and the bundle installed on this machine dates to 2026-04-26, predating
+the entire episode. Node's history supplies a lineage edge no document claimed: "tools: sync mk-ca-bundle.pl
+with curl" (2026-08-05), and "update root certificates to NSS 3.131.1" (2026-10-20), which is why the source
+header holds 118 anchors while the installed v25.9.0 binary still carries 145 — a date, not a policy.
 
 Anyone can reproduce this without trusting any of it: run `verify_provenance.py --check`, or re-collect a store
 into a second data directory and `join_programs.py` it against the committed artifact — which is how the

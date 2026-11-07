@@ -21,6 +21,9 @@ Verdicts, in the order they matter:
   so it fails the gate only where the comparison is marked `must`.
 * `unverifiable` -- the channel does not exist, refused us, or no raw was retained. Reported as such rather
   than dropped: a validator that skips a check and exits 0 is worse than no validator.
+* `recorded` -- the check captured a fact that is not a comparison, such as who a repository credits for the
+  last change to a list. Attribution to a sync bot is a finding, not a failure, and gets its own word so it
+  cannot be mistaken for agreement.
 
 Usage:
     python tools/verify_provenance.py --check --data M:\\trustatlas
@@ -151,6 +154,50 @@ CHECKS: tuple[dict[str, Any], ...] = (
         "expect": INFO,
         "note": "Validated by re-running the provider on the same machine, never by a URL. A host-resident "
         "probe has no second channel by construction, which is worth stating instead of hiding behind a green.",
+    },
+    {
+        "id": "nss.git_authors",
+        "artifact": "mozilla.nss.json",
+        "side_a": "who the git mirror credits for the last changes to certdata.txt",
+        "side_b": "https://api.github.com/repos/mozilla/gecko-dev/commits?path=...certdata.txt",
+        "kind": "commit_history",
+        "url": "https://api.github.com/repos/mozilla/gecko-dev/commits?path=security/nss/lib/ckfw/builtins/certdata.txt&per_page=3",
+        "expect": INFO,
+        "note": "The mirror answers the authorship question with a sync bot: the last two commits touching the "
+        "file are updatebot-ci, 'Bug 1975654 - Update NSS to 786a3904...' (2025-07-07) and 'Bug 1971906 - "
+        "Update NSS to 8a4fe863...' (2025-06-13). Two things follow. The person who decided to add or remove "
+        "an anchor is NOT recoverable from the mirror, because a mirror records transport, not judgement. And "
+        "the mirror's newest touch to this file predates today by months, which corroborates the digest "
+        "mismatch above with an independent signal: the mirror is stale, not merely different. Authorship of "
+        "the decision lives in Mercurial, whose JSON log endpoint served HTML from here.",
+    },
+    {
+        "id": "certifi.git_authors",
+        "artifact": "certifi.json",
+        "side_a": "who last changed the bundle in git",
+        "side_b": "https://api.github.com/repos/certifi/python-certifi/commits?path=certifi/cacert.pem",
+        "kind": "commit_history",
+        "url": "https://api.github.com/repos/certifi/python-certifi/commits?path=certifi/cacert.pem&per_page=3",
+        "expect": INFO,
+        "note": "A human and a bot, visibly doing different jobs: nneul (Nathan Neulinger) committed 'Restore "
+        "unaffected emSign roots (#439) (#440)' on 2026-10-20, and github-actions[bot] cut the '2026.10.23' "
+        "release two days later. That pairs with the channel check: the bundle installed on this machine dates "
+        "to 2026-04-26, so it predates the emSign restoration, and the staleness is now a named change rather "
+        "than a vague 'probably old'.",
+    },
+    {
+        "id": "node.git_authors",
+        "artifact": "node.bundled.json",
+        "side_a": "who last updated the compiled-in root list",
+        "side_b": "https://api.github.com/repos/nodejs/node/commits?path=src/node_root_certs.h",
+        "kind": "commit_history",
+        "url": "https://api.github.com/repos/nodejs/node/commits?path=src/node_root_certs.h&per_page=3",
+        "expect": INFO,
+        "note": "Explains the 118-against-145 difference without inference: aduh95 (Antoine du Hamel) committed "
+        "'crypto: update root certificates to NSS 3.131.1' on 2026-10-20, after nodejs-github-bot landed "
+        "NSS 3.126 on 2026-08-25. The installed v25.9.0 binary predates the October update, so its 145 anchors "
+        "are an older snapshot rather than a different policy -- which is exactly the distinction the map "
+        "exists to make, and it is attributable to a date and a person.",
     },
 )
 
@@ -306,6 +353,43 @@ def run_check(check: dict[str, Any], data: Path) -> dict[str, Any]:
             "detail": f"channel {theirs[:16]}... vs {side_a_label} {ours[:16]}...",
             "channel_digest": theirs,
             "side_a_digest": ours,
+        }
+
+    if kind == "commit_history":
+        # Authorship is not a comparison, so it gets its own verdict: the check records who the repository
+        # credits and never claims agreement. A mirror attributing a change to a sync bot is a finding, not a
+        # failure, and saying "recorded" keeps that distinguishable from a channel that matched.
+        try:
+            commits = json.loads(payload.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError as exc:
+            return {
+                **result,
+                "verdict": "unverifiable",
+                "detail": f"not JSON: {exc}"[:180],
+            }
+        if not isinstance(commits, list):
+            return {
+                **result,
+                "verdict": "unverifiable",
+                "detail": f"API returned {str(commits)[:160]}",
+            }
+        who = [
+            {
+                "sha": str(row.get("sha", ""))[:10],
+                "when": str(row["commit"]["author"]["date"])[:10],
+                "login": (row.get("author") or {}).get("login", "nobody"),
+                "name": row["commit"]["author"]["name"],
+                "subject": row["commit"]["message"].splitlines()[0][:90],
+            }
+            for row in commits[:3]
+        ]
+        return {
+            **result,
+            "verdict": "recorded",
+            "detail": "; ".join(
+                f"{w['login']} {w['when']} {w['subject'][:44]}" for w in who
+            ),
+            "commits": who,
         }
 
     claimed = artifact_set(data, check["artifact"])
