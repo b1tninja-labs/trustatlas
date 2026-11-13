@@ -6,9 +6,20 @@ some globally trusted program issued, and how do we know?" — and a row that ov
 into marketing.
 
 **The honesty rule:** a row may read `[ok]` only when a named test would fail if the behaviour regressed.
-`trustatlas` has no test suite, so **no row here reads `[ok]`**, and none may be promoted until a test
-exists to defend it. Landed tools therefore read `[part]`: the code runs and its artifact is the evidence,
-but nothing re-checks the claim when the tool changes.
+
+**Where this stands, measured 2026-11-13 (Python 3.14.3, `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`):**
+`tests/` holds 39 tests in two files (`test_collect_bundle.py`, `test_pyproject.py`); **32 pass and 7 fail**, all
+seven in `test_collect_bundle.py` (row `ta.suite_green`, which says which side is wrong in each). The suite,
+`pyproject.toml`, `tools/check_spki_artifact.py` and `.probe_spki/` are **untracked**: they exist in the tree and in
+no commit, and the 2026-11-07 text of this file said they did not exist. **No row reads `[ok]`**, because no named
+test passes for any row's behaviour yet, and nothing checks that a row's named test exists (`ta.roadmap_gate`).
+Landed tools read `[part]`: the code runs and its artifact is the evidence. A `Test:` id marked `(to be written)`
+names a file that does not exist; a named file that does exist is `tests/test_collect_bundle.py` and
+`tests/test_pyproject.py` only.
+
+The shape, so no one reads this as a package: nine tracked scripts under `tools/` plus one untracked
+(`check_spki_artifact.py`), stdlib only, writing artifacts to `--data`. `ta.package` is `[no]` and
+`tests/test_pyproject.py` pins the refusal.
 
 Legend: `[ok]` implemented and pinned by a named test -- `[part]` partial, with what is missing stated --
 `[ ]` not implemented -- `[no]` deliberate non-goal.
@@ -34,6 +45,19 @@ here; `PLAN.md`'s gating rule and its **Unverified** section bind this document 
 | `ta.readers_via_command` | PLAN.md P2 | `[part]` | **Node and Python were read on 2026-11-07 through one new seam rather than two new tools**: `collect_bundle.py --reader <exe> --reader-arg …` asks an executable to print PEM on stdout and feeds it to the same `index_pem` as every other store, argv passed directly with no shell. Node v25.9.0 compiles **145** anchors into its binary and **certifi's 120 are a strict subset of them** — the second subset relation recorded in this project, the first being curl inside the unfiltered NSS built-ins — while NSS-as-TLS (117) shares 114, leaving 31 anchors Node still carries that Mozilla no longer trusts for TLS: Node's set is a vintage, not a current list. `python.schannel` is the day's sharpest result: `ssl.create_default_context()` loads **72** anchors where PowerShell's provider lists **68** in the same hive, 54 shared. The 14 Python omits are code-signing and time-stamping roots; the 18 it adds are not anchors by any reading (`RapidSSL TLS RSA CA G1`, `GoDaddy TLS Intermediate CA DV - R1v1`, `Microsoft Update Secure Server CA 2.1`, `Microsoft Secure Server CA 2011`, `Microsoft Code Signing PCA 2024`, a Microsoft TLS OCSP responder). Mechanism unresolved at commit time — the third reader, `certutil -store Root`, is one command and was run next; the consequence is not, since a client that loads an issuing CA as a trust anchor terminates chains there. That mechanism was measured the same day, one command after the commit that left it open, and it is a store graph rather than a broken client: ROOT physically holds 16 certificates (`certutil -store Root` reports exactly those 16), AuthRoot holds 52, CA holds 7, and PowerShell's listing of 68 is precisely ROOT union AuthRoot, verified by thumbprint containment with none of the 7 CA entries appearing. `HKCU\SOFTWARE\Microsoft\SystemCertificates\ROOT\Certificates` is empty, so the user-hive mirror was the provider following links, and the nothing-user-installed negative now rests on 0 physical entries. crypt32 under a purpose filter drops the signing-only entries and admits linked contents instead; 11 of the 18 remain unattributed, pending an enumeration of the store's link list rather than another guess. **Closed later the same day, by the tools rather than by ad-hoc scripting:** `collect_store.py` gained `CA` as a collectable store (deliberately not in the default set, because adding it would change what the machine artifact claims and every join computed from it), and `Cert:\CurrentUser\CA` holds **23** entries of which **exactly 18** are in Python's set. The installed `ssl` source gives the mechanism outright: `load_default_certs` iterates `_windows_cert_stores`, which is `('CA', 'ROOT')`, and loads each entry through `load_verify_locations(cadata=...)` when `trust is True` or the serverAuth OID appears. So CPython turns the OS's *cached intermediate* store into trust anchors, and the arithmetic closes: 68 − 14 purpose-filtered = 54 shared, + 18 = 72. The consequence is the one that matters operationally: a machine's connection history changes what `create_default_context()` trusts, which reaches pip, requests and httpx on that interpreter. `collect_store.py` gained `--location CurrentUser`, and `Cert:\CurrentUser\Root` proved **byte-identical to the machine store** here (68), so nothing is user-installed on this host — a measured negative, and the first time that hive has been looked at. The refactor's own regression: re-deriving the machine artifact into scratch joined identical to the committed one (68 of 68). Test: `tests/test_collect_bundle.py::test_a_reader_that_prints_pem_yields_the_same_digests_as_a_file` (to be written) | P2 |
 | `ta.store_registry` | PLAN.md §registry | `[part]` | `tools/store_registry.py` — 21 rows codifying where each client's anchors actually live, whose reader prints them, and how sure the row is (`measured` / `documented` / `guessed`), because a client is not a store: Chrome and Edge on Windows read the Windows store, on Apple platforms Security.framework, on Linux NSS. `--probe` writes `store/registry.status.json` with, per row: reader present here, its version, when the file or binary last changed (cacerts 2026-05-10, the node binary 2026-04-01, certifi's data 2026-04-26), and how many anchors the last artifact counted plus when it was taken — 14 readers present, 12 artifacts, so the gap between "can be read" and "has been read" is visible rather than remembered. Measured again after the Android and provenance work: 21 rows, 14 readers present, 12 artifacts. Two defects the first run exposed and both were fixed before committing: rows name `collect_java.py` while the dispatcher compared `collect_java`, which reported Java unreachable on a host with a JDK; and rows sharing one artifact reported that file's total for each hive, claiming `Disallowed` held 68 anchors when it holds none. The column is headed `reader` and not `reach`, because it answers "does the tool exist here" and not "is the store trustworthy". Test: `tests/test_store_registry.py::test_a_row_without_a_reader_is_reported_unreachable_not_missing` (to be written) | P2 |
 
+## 1a. Evidence and hygiene (added 2026-11-13)
+
+| Obligation | Spec | Status | Where | Milestone |
+|---|---|---|---|---|
+| `ta.suite_green` | AGENTS.md conventions | `[part]` | `tests/test_collect_bundle.py`, `tools/collect_bundle.py`. **The seven failures are not `asn1core`'s strict PrintableString check**: `collect_bundle.py` imports no `asn1core` and parses no certificate. (`asn1core` now offers `lenient_values=True` and `der_violations()`, and `asn1core/tools/collect_anchors.py` already reads strict DER first and falls back to BER, which is how `check_spki_artifact.py` reaches certificates; trustatlas needs no change for that.) Diagnosis per test, read from the code on 2026-11-13: **(1)** `test_the_counts_account_for_every_block_that_was_seen`: a *test* defect, its `.replace(b64, "%%%%")` never matches because `pem_for` wraps base64 at 64 columns, so `malformed_blocks` stays 0. **(2, 3)** `test_a_keystore_alias_is_recorded_as_an_alias_and_leaves_subject_absent`, `test_a_subject_beats_an_alias_when_a_single_block_carries_both`: a *tool* defect, `index_pem` sets `subject` to the label when `name_key != "subject"` (the overstatement its own docstring refuses) and omits `alias` when `name_key == "subject"` (`KeyError: 'alias'`); always emit both keys and write the label only to `name_key`. **(4)** `test_a_field_that_is_not_a_name_is_never_used_as_one[too-short]`: a *test* defect, the floor is `len(stripped) < 5` and `"short"` has five characters; use a four-character case. **(5)** `test_a_dump_that_survives_the_extractor_still_cannot_be_read_as_a_name`: a *tool* defect for `B` (an OpenSSL `Certificate:` dump above a block is read as that block's name, the Android defect for callers that skip `pem_from_tar`) and a *test* defect for `A` (it expects the dump to name `A`, which contradicts the row `ta.readers_remaining`: dumps are dropped, never read). **(6)** `test_the_archive_keeps_only_pem_spans_so_no_subject_lands_on_the_next_anchor`: a *test* defect, it expects subjects out of dumps `pem_from_tar` drops by design; the member filename is the `alias` and `subject` is `None`. **(7)** `test_a_reader_that_will_not_speak_writes_no_artifact`: not Python 3.14: `--reader-arg -c` fails in argparse on 3.12 as well, because a value that looks like a flag is refused; the tool must document and the tests and `store_registry.py` (row `python.schannel`, which passes `--reader-arg` then `-c`) must use `--reader-arg=-c`. Also: the test file defines `aosp_member` and `tar_payload` twice (two writers merged; ruff F811), and the 3.12 interpreter on this host has no pytest, so 3.12 was only checked for the argparse behaviour. Tests that name rows: none yet. **Not edited**: the tree holds someone's uncommitted work, so this row is the fix, to be applied by whoever owns those files | P2 |
+| `ta.bundle_name_fields` | `collect_bundle.index_pem` docstring | `[ ]` | `tools/collect_bundle.py`: `subject` only from a `subject:`/`owner:` line, `alias` only from an alias line or an archive member name, both keys always present. Test: `tests/test_collect_bundle.py::test_a_keystore_alias_is_recorded_as_an_alias_and_leaves_subject_absent` (exists, fails). Re-derive `java.cacerts.json` after the fix: it was written with the alias in `subject` | P2 |
+| `ta.bundle_dump_guard` | `ta.readers_remaining` | `[ ]` | `tools/collect_bundle.py`: a header region that holds an OpenSSL `Certificate:` dump is discarded whole and counted, so a caller that bypasses `pem_from_tar` cannot attach one certificate's `Subject:` to the next. Test: `tests/test_collect_bundle.py::test_a_dump_that_survives_the_extractor_still_cannot_be_read_as_a_name` (exists, fails; correct its `A` assertion first) | P2 |
+| `ta.reader_arg_form` | `argparse` | `[ ]` | `tools/collect_bundle.py`, `tools/store_registry.py`: the reader's own flags travel as `--reader-arg=VALUE`, or `--reader-args` with `nargs=argparse.REMAINDER`. Test: `tests/test_collect_bundle.py::test_a_reader_that_will_not_speak_writes_no_artifact` (exists, fails); add a case run under `py -3.12` as well | P2 |
+| `ta.pem_armour` | RFC 7468 section 5.1 (certificate label), erratum 4508 section 3 (boundaries are case-sensitive; verified 2026-11-13) | `[ ]` | `tools/collect_bundle.py` splits on `BEGIN` and `END` as exact strings (so it is case-sensitive already, unpinned) and does not warn on `X509 CERTIFICATE`. Test: `tests/test_collect_bundle.py::test_lowercase_begin_boundary_is_not_a_block` (to be written); hostile: 10 MB of base64, a NUL, an unterminated block end in an error count, never a crash | P2 |
+| `ta.roadmap_gate` | ctspy's `tests/test_roadmap_rows.py` | `[ ]` | `tests/test_roadmap_rows.py` (to be written): every `[ok]` row names a test file and function that exists, and every `Test:` id marked `(to be written)` stays marked until the file appears | P2 |
+| `ta.python_matrix` | `requires-python = ">=3.12"` | `[ ]` | the suite is run on 3.14.3 only; a gate runs `py -3.12` and `py -3.14` (the dev extras do not install on the 3.12 interpreter here) | P2 |
+| `ta.fixture_data` | `.probe_spki/make_fixture.py` | `[ ]` | `.probe_spki/` is an untracked probe directory. `data/` is 38 kB of **synthetic** output (throwaway RSA keys from `make_fixture.py`, `raw/curl.pem`, `raw/android.aosp.tar.gz`, a `tmp/` of three DER files): no upstream bytes, so nothing in it carries program terms. Proposed: commit `make_fixture.py` under `tests/fixtures/` and generate the data into `tmp_path` in a test, never commit `data/` or `tmp/` (keys differ per run, so committed output would not reproduce). The script imports `cryptography`, which `dependencies = []` forbids for `tools/`, so it lives with the tests and is a dev extra if it stays. **Owner decision 1** | P2 |
+
 ## 2. Derivation and index
 
 | Obligation | Spec | Status | Where | Milestone |
@@ -42,6 +66,26 @@ here; `PLAN.md`'s gating rule and its **Unverified** section bind this document 
 | `ta.spki_key_identity` | SPKI SHA-256 | `[part]` | `asn1core` **shipped it**: `x509.spki_sha256`, pinned by `tests/test_x509_corpus.py::test_the_extracted_digests_match_an_independent_implementation` against digests `cryptography` printed for the same bytes. What remains is consumption: `trustatlas` tools are stdlib-only, so the key identity must arrive through an artifact or an `asn1core`-side tool, not a parser grown here. Test: `tests/test_spki_key_identity.py::test_key_identity_arrives_through_an_artifact` (to be written) | P2 |
 | `ta.ctl_decode` | MS-CAB unpack, signed trust blob | `[ ]` | owned by `pkix`: `cab.member()`, `ctl.root_program()`, `ctl.signed_by_microsoft()`. Until those exist the Windows program is bytes and a pinned hash, not a membership count | P2, blocked on `pkix` M7 |
 | `ta.coverage_index` | PLAN.md P4 | `[ ]` | owned by `certledger`; the index that makes coverage a queryable state rather than a paragraph | P4 |
+
+## 2a. Host joins for pkgtrust (added 2026-11-13)
+
+pkgtrust wants, per distribution hostname, the chain the host presents and which root programs list a key in it.
+`PORTFOLIO.md` section 9 item 15 settles the split: **TLS chain capture lives in `certledger`'s transport layer; trustatlas
+only joins captured chains against trust stores and never connects to a host.** So there is no `collect_chain.py` here (the
+2026-11-13 review proposed one; that row is withdrawn), and the scripts below read files. The word "trusted" does not
+appear in any output: a join says only that a presented certificate's key (SPKI SHA-256) equals a key some program lists.
+Path validation, "chains to" and "is trusted for TLS in P" are `pkix`'s, and stay `[ ]` here until it exists.
+
+| Obligation | Spec | Status | Where | Milestone |
+|---|---|---|---|---|
+| `ta.host_chain_in` | input contract: `certledger`'s endpoint observation (proposed there as `cl.endpoint-observe`, id not yet ratified; schema referred to here as `host-chain/1`, one row per host with `status` in captured / refused / timeout / no_tls / skipped, and for a captured host the presented certificates in order, each as raw DER or PEM with `sha256`) | `[ ]` | `tools/host_reach.py` reads it and **refuses another schema or a row without retained raw bytes**, as `check_spki_artifact.py` refuses a store whose raw is gone. Blocked on: `certledger` ratifying the observation row and its schema name. Test: `tests/test_host_reach.py::test_a_chain_without_retained_raw_is_refused_and_nothing_is_written` (to be written) | P3 |
+| `ta.host_reach` | SPKI SHA-256 identity join only; RFC 5280 section 6 is **not** implemented here | `[ ]` | `tools/host_reach.py` hands each presented certificate to `asn1core/tools/collect_anchors.py` as a subprocess (the pattern in `check_spki_artifact.py`, so strict-DER-then-BER is `asn1core`'s), joins its `spki_sha256` against every `<store>.spki.json`, and writes `host-reach/1`: per host, per presented position, `programs: {mozilla, windows, java, node, android, curl, ...: present / absent / unread}` plus `limits: ["identity join only: no path validation"]`. `unread` is a program with no artifact, never `absent`. No wall clock in the output. Test: `tests/test_host_reach.py::test_a_chain_is_never_reported_as_trusted_only_as_containing_a_listed_key` (to be written; it scans the whole output for the substring `trust` outside the field names it pins) | P3 |
+| `ta.host_reach_twin` | RFC 4158 (path building, cross-signing) | `[ ]` | two certificates with one SPKI (a cross-signed twin) join on the key and report both certificate digests. Test: `tests/test_host_reach.py::test_cross_signed_twin_matches_on_key_not_certificate` (to be written) | P3 |
+| `ta.host_reach_hostile` | n/a | `[ ]` | a host with 200 certificates, a 5 MB certificate, a PEM with a lowercase boundary and a name with `/` or `@` end as a recorded limit or refusal, never a crash. Test: `tests/test_host_reach.py::test_hostile_chains_end_as_limits_not_crashes` (to be written) | P3 |
+| `ta.reach` | PLAN.md P6 design goal; RFC 5280 section 6 and RFC 4158 via `pkix` | `[ ]` | cross-sign reach computed by `pkix`, not by hand; this id is the row the open question in section 6 asked for. Blocked on `pkix` | P6, blocked on `pkix` |
+| `ta.constraints` | RFC 5914 (Trust Anchor Format: a key plus the constraints on what it may be anchor for) | `[ ]` | per-store restrictions the registry does not carry (NSS trust bits and distrust-after dates from `certdata.txt`, Windows EKUs, Android flags), so "in store X" stops reading as "trusted for TLS in X". RFC 9925 (unsigned certificates) means a placeholder-signature certificate is not a self-signed root and must not be counted as one | P4 |
+| `ta.refresh` | PLAN.md P5 exit test | `[ ]` | how often artifacts are re-collected and how staleness is shown; nothing schedules a re-collect today | P5 |
+| `ta.consume_index` | `certledger` coverage index | `[ ]` | replaces the single `ta.coverage_index` row's consumer half: reads a `certledger` artifact, never its store; the index itself and `cl.names` stay `certledger`'s | P4 |
 
 ## 3. Publication surface
 
@@ -63,7 +107,7 @@ here; `PLAN.md`'s gating rule and its **Unverified** section bind this document 
 
 ## 5. Board projection
 
-`py sdk-forge/sync_roadmap.py --project trustatlas --check` projects this matrix onto GitHub issues; the
+`python -m projecthub sync --check` (from `D:\code`; `sdk-forge` is retired) projects this matrix onto GitHub issues; the
 issues are collected on Project V2 **#4 "Protocol SDK portfolio"**, the only board. Read with
 `gh project item-list 4` on 2026-11-07: **20 items** from this repository, all in Backlog — 9 `status:partial`,
 7 `status:unimplemented`, 4 `type:non-goal`, one per row of sections 1 to 4. The whole board held 102 items
@@ -73,8 +117,8 @@ This section is a dated snapshot, not a live count. The board is the live view; 
 truth. **This file is**, and a board cannot enforce a rule — only a test can.
 
 The `Milestone` column places each row on `PLAN.md`'s P0-P7 phasing. A `Test:` id marked `(to be written)`
-names the test that would let the row move past `[part]`; no such file exists, because `trustatlas` has no
-test suite yet.
+names the test that would let the row move past `[part]`; no such file exists. The files that do exist are
+`tests/test_collect_bundle.py` (7 of 39 failing, row `ta.suite_green`) and `tests/test_pyproject.py`.
 
 ## 6. Open questions
 
@@ -83,3 +127,21 @@ test suite yet.
   `ta.render_blocklist` is undecided, so no row was invented.
 - **`ta.collect_ctl` has no phase.** It fetches the Microsoft program that P2 is about, but decoding it waits on
   `pkix` M7 (`ta.ctl_decode`); P2 is the likely placement and is not asserted here.
+
+Both questions above are answered by section 2a: cross-sign reach is `ta.reach`, and `ta.collect_ctl` stays unplaced
+until `pkix` M7.
+
+## 7. Owner decisions (2026-11-13)
+
+1. **`.probe_spki/data`.** Synthetic, 38 kB, no upstream bytes. Recommendation: do not commit `data/` or `tmp/`;
+   commit `make_fixture.py` as a test fixture generator (row `ta.fixture_data`). Needs a yes or a different call.
+2. **Off-PyPI brand check.** Still open from 2026-11-05: the name is measured free on PyPI with zero one-keystroke
+   neighbours, but trademark, GitHub, domain and product-name collisions were never checked. Required before anything
+   is published; nothing is published today.
+3. **Legal review.** `cl.aup-review` has not ruled on program materials (Mozilla, Microsoft, Apple, Google, Oracle
+   terms), so the posture stays hashes-and-counts, and `ta.provenance_gate` implies retaining raw payloads in the data
+   directory, which is a different act. A lawyer's reading decides `ta.publish_bundles` and the retention posture.
+4. **Scanning.** Not trustatlas's any more: chain capture is `certledger`'s (section 9 item 15); the owner's
+   "one TLS handshake per host per run" limit applies there.
+5. **Who fixes the seven tests.** The tree holds uncommitted work by someone else; the fix is written as
+   `ta.suite_green` and rows `ta.bundle_name_fields`, `ta.bundle_dump_guard`, `ta.reader_arg_form`, and was not applied.
