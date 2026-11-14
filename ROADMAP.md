@@ -8,8 +8,8 @@ into marketing.
 **The honesty rule:** a row may read `[ok]` only when a named test would fail if the behaviour regressed.
 
 **Where this stands, measured 2026-11-14 (Python 3.14.3, `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider`):**
-`tests/` holds five files (`test_collect_bundle.py`, `test_pyproject.py`, `test_roadmap_rows.py`,
-`test_verify_provenance.py`, `test_join_programs.py`); **69 pass, 0 fail, 0 xfail**, and `ruff check tools tests`,
+`tests/` holds thirteen files; **111 pass, 0 fail, 1 strict xfail** (a `collect_certdata` defect pinned, not fixed:
+row `ta.collect_certdata`), and `ruff check tools tests`,
 `ruff format --check tools tests` and `mypy` are all clean (row `ta.suite_green`). `.probe_spki/` is the one
 untracked path left (owner decision 1).
 **No row reads `[ok]`**: rows whose named test now passes read `[part]` until `projecthub`'s evidence check has run
@@ -118,10 +118,11 @@ truth. **This file is**, and a board cannot enforce a rule — only a test can.
 
 The `Milestone` column places each row on `PLAN.md`'s P0-P7 phasing. A `Test:` id marked `(to be written)`
 names the test that would let the row move past `[part]`, and `tests/test_roadmap_rows.py` fails if that test exists
-while the marker remains. The files that exist on 2026-11-14 are `test_collect_bundle.py`, `test_pyproject.py`,
-`test_roadmap_rows.py`, `test_verify_provenance.py` and `test_join_programs.py`, all passing (69, no xfail).
-`projecthub leases acquire` refused every trustatlas row on 2026-11-14 with `project not Active`, so the rows edited
-that day carry no lease. The board must make the project Active before the evidence check can move any row to `[ok]`.
+while the marker remains. On 2026-11-14 thirteen test files exist, 111 passing and one strict xfail.
+`projecthub leases acquire` refused every trustatlas row earlier that day with `project not Active`; after projecthub
+`bbd4127` and the registry's reclassification to Tooling, a lease activates the project, and the rows worked later
+that day were each done under a lease and submitted for the evidence check. No row reads `[ok]` until that check
+passes it.
 
 ## 6. Open questions
 
