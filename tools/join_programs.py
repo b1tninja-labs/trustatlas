@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -81,7 +82,23 @@ def states_trust(rows: Iterable[dict[str, Any]]) -> bool:
     return True
 
 
+def tolerate_console_encoding() -> None:
+    """Make stdout and stderr escape what the console encoding cannot carry, instead of raising.
+
+    On Windows a piped stdout defaults to cp1252, and NSS subjects carry characters it has no byte for
+    (U+0151 in a Hungarian root's name), so printing the remainder listing raised `UnicodeEncodeError`
+    halfway through. Escaping keeps the encoding the console asked for -- forcing UTF-8 instead would
+    print mojibake to a cp1252 reader and change what a downstream pipe receives -- and a backslash escape
+    is lossless where `?` is not. The console is a report; the join artifact is written as UTF-8 bytes
+    by `main` and is not affected by any of this.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
+
+
 def main() -> int:
+    tolerate_console_encoding()
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

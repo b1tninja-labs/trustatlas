@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -193,3 +194,36 @@ def test_cli_exit_code_is_mains_return(tmp_path: Path) -> None:
     mixed = {"program": "mixed", "anchors": [*A_ROWS, {"sha256": h("silent")}]}
     (tmp_path / "store" / "mixed.json").write_text(json.dumps(mixed), encoding="utf-8")
     assert run("--a", "mixed.json", "--a-trust", "SERVER_AUTH").returncode == 2
+
+
+def test_listing_survives_a_subject_the_console_cannot_encode(tmp_path: Path) -> None:
+    # Windows pipes stdout under cp1252 by default, and NSS carries subjects (a Hungarian root's name) with
+    # U+0151, which cp1252 has no byte for. The listing must still print, and the artifact must not change.
+    write_artifacts(tmp_path)
+    o_double_acute, rest = chr(0x151), "tan" + chr(0xFA) + "s" + chr(0xED) + "tv" + chr(0xE1) + "ny"
+    subject = "CN=NetLock Arany (Class Gold) F" + o_double_acute + rest
+    rows = [*A_ROWS, {"sha256": h("hu"), "subject": subject, "store": "nss", "trust": TLS}]
+    a = {"program": "nss", "retrieved_at": "2026-11-07T00:00:00+00:00", "anchors": rows}
+    (tmp_path / "store" / "a.json").write_text(json.dumps(a), encoding="utf-8")
+    script = Path(join_programs.__file__)
+    argv = [sys.executable, str(script), "--data", str(tmp_path), "--a", "a.json", "--b", "b.json"]
+
+    def run(encoding: str, out: Path) -> subprocess.CompletedProcess[bytes]:
+        env = {**os.environ, "PYTHONIOENCODING": encoding, "PYTHONUTF8": "0"}
+        # argv is a list against the interpreter running this suite and the script it imported; no shell.
+        return subprocess.run(  # noqa: S603
+            [*argv, "--out", str(out)], capture_output=True, env=env, check=False
+        )
+
+    done = run("cp1252", tmp_path / "out" / "cp1252.json")
+    assert done.returncode == 0, done.stderr.decode("cp1252", "replace")
+    listing = done.stdout.decode("cp1252")
+    # The unencodable character is escaped (backslash, "u0151"), not dropped and not replaced by "?", so the
+    # name stays recoverable; the characters cp1252 does carry are printed as themselves.
+    escaped = "F" + chr(0x5C) + "u0151" + rest + " [nss]"
+    assert escaped in listing
+    # The artifact is the same bytes whatever the console encoding: the escaping is the console's alone.
+    assert run("utf-8", tmp_path / "out" / "utf8.json").returncode == 0
+    written = (tmp_path / "out" / "cp1252.json").read_bytes()
+    assert written == (tmp_path / "out" / "utf8.json").read_bytes()
+    assert h("hu") in json.loads(written)["only_a"]
