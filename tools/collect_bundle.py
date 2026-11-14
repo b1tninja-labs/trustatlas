@@ -34,6 +34,7 @@ import ssl
 import subprocess
 import sys
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
 
 BEGIN = "-----BEGIN CERTIFICATE-----"
@@ -45,6 +46,11 @@ NAME_KEYS = ("subject", "alias")
 # 1 MiB of text is about 768 KiB of DER, far above any trust anchor a program ships; the cap exists so a
 # hostile 10 MB block ends as a count rather than a digest of whatever it was.
 MAX_BLOCK_CHARS = 1 << 20
+# The historical labels RFC 7468 section 5.1 names: generators MUST NOT emit them, and parsers SHOULD NOT treat
+# them as equivalent to "CERTIFICATE", with backwards compatibility (potentially with a warning) allowed as
+# an exception. This file takes the strict side: such a block is counted and warned about, never hashed, so
+# it cannot enter a join; the bundle itself is still read rather than refused.
+LEGACY_BEGINS = ("-----BEGIN X509 CERTIFICATE-----", "-----BEGIN X.509 CERTIFICATE-----")
 
 
 def bundle_path(program: str, explicit: str | None) -> Path | None:
@@ -208,6 +214,9 @@ def index_pem(
         "named": sum(1 for c in seen.values() if c.get(name_key)),
         "subject_named": sum(1 for c in seen.values() if c.get("subject")),
         "header_dumps_discarded": dumps_discarded,
+        # Outside `pem_blocks` on purpose: these are not CERTIFICATE blocks, so the identity
+        # distinct + duplicate + malformed == pem_blocks is untouched by them.
+        "legacy_label_blocks": sum(text.count(label) for label in LEGACY_BEGINS),
     }
     return seen, counts
 
@@ -265,6 +274,55 @@ def pem_from_tar(payload: bytes) -> tuple[str, int, int]:
                 dumped += 1
             members += 1
     return "\n".join(text), members, dumped
+
+
+def membership_change(previous: Path, program: str, current: Iterable[str]) -> dict[str, object]:
+    """What changed in `program`'s membership since the artifact at `previous`, by SHA-256 of DER.
+
+    The artifact path is keyed by program alone, so a run writes over the one before it. Diffing first
+    keeps that overwrite from erasing what the program used to trust: the superseded file is named by its
+    own SHA-256 and `retrieved_at`, and its digest set is recoverable as current - added + removed. A first
+    run says so (`previous: None`) rather than reporting every anchor as added, which would read as a
+    program that grew from nothing. A previous file that cannot be read as an artifact of this program is
+    recorded as `comparable: false` with the reason, never diffed as if it were empty.
+    """
+    now = set(current)
+    if not previous.is_file():
+        return {
+            "previous": None,
+            "note": f"first run: no previous artifact for {program!r} at {previous}",
+        }
+    raw = previous.read_bytes()
+    before: dict[str, object] = {
+        "path": str(previous),
+        "file_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    try:
+        old = json.loads(raw.decode("utf-8"))
+        before["retrieved_at"] = old.get("retrieved_at")
+        before["program"] = old.get("program")
+        then = {str(row["sha256"]) for row in old["certificates"]}
+    except (UnicodeDecodeError, ValueError, AttributeError, KeyError, TypeError) as exc:
+        return {
+            "previous": before,
+            "comparable": False,
+            "reason": f"previous artifact unreadable: {type(exc).__name__}: {exc}"[:300],
+        }
+    if before["program"] != program:
+        return {
+            "previous": before,
+            "comparable": False,
+            "reason": f"previous artifact is for program {before['program']!r}, not {program!r}",
+        }
+    before["distinct_certificates"] = len(then)
+    added, removed = sorted(now - then), sorted(then - now)
+    return {
+        "previous": before,
+        "comparable": True,
+        "counts": {"added": len(added), "removed": len(removed), "unchanged": len(now & then)},
+        "added": added,
+        "removed": removed,
+    }
 
 
 def main() -> int:
@@ -380,6 +438,8 @@ def main() -> int:
         }
 
     seen, counts = index_pem(text, program=args.program, name_key=args.reader_name_key)
+    out = Path(args.data) / "store" / f"{args.program}.json"
+    change = membership_change(out, args.program, seen)
 
     doc = {
         "artifact": "trustatlas.bundle.collect",
@@ -394,9 +454,9 @@ def main() -> int:
             ),
         },
         "counts": counts,
+        "membership_change": change,
         "certificates": sorted(seen.values(), key=lambda c: str(c["sha256"])),
     }
-    out = Path(args.data) / "store" / f"{args.program}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes((json.dumps(doc, indent=1) + "\n").encode("utf-8"))
     print(
@@ -412,6 +472,23 @@ def main() -> int:
         f"{checks['fingerprint_agrees']} match what this script hashed, and "
         f"{checks['named']} carry a name in the file"
     )
+    if counts["legacy_label_blocks"]:
+        print(
+            f"warning: {counts['legacy_label_blocks']} block(s) carry the legacy 'X509 CERTIFICATE' or "
+            "'X.509 CERTIFICATE' label (RFC 7468 section 5.1); counted in legacy_label_blocks, not hashed",
+            file=sys.stderr,
+        )
+    if change["previous"] is None:
+        print("  no previous artifact for this program: membership not diffed (first run)")
+    elif change.get("comparable"):
+        moved = change["counts"]
+        assert isinstance(moved, dict)
+        print(
+            f"  against the previous artifact: {moved['added']} added, {moved['removed']} removed, "
+            f"{moved['unchanged']} unchanged"
+        )
+    else:
+        print(f"  previous artifact not compared: {change['reason']}")
     return 0
 
 

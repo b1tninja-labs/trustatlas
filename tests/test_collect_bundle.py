@@ -143,6 +143,7 @@ def test_each_block_hashes_to_its_own_der_and_the_counts_add_up() -> None:
         "named": 2,
         "subject_named": 2,
         "header_dumps_discarded": 0,
+        "legacy_label_blocks": 0,
     }
     assert counts["distinct_certificates"] == len(seen)
     for marker in (b"A", b"B"):
@@ -700,6 +701,83 @@ def test_the_written_artifact_carries_these_digests_and_counts(tmp_path: Path) -
     assert "no subject" in provenance["note"]
 
 
+def test_membership_is_diffed_between_runs(tmp_path: Path) -> None:
+    """`ta.collect_bundle`: a second run over the same program records what joined and what left.
+
+    The artifact path is keyed by program, so the second run writes over the first; the diff is what keeps
+    the superseded membership recoverable (current - added + removed) and names the file it superseded by
+    its own SHA-256. A first run records that there was nothing to compare against, rather than calling every
+    anchor "added", which would read as a program that grew from an empty trust set.
+    """
+    bundle_path = tmp_path / "fixture.pem"
+    artifact = tmp_path / "store" / "fixture.diffed.json"
+    argv = ("--data", str(tmp_path), "--program", "fixture.diffed", "--path", str(bundle_path))
+
+    bundle_path.write_text(blocks((b"A", ""), (b"B", "")), encoding="utf-8")
+    assert run_main(*argv) == 0
+    first_bytes = artifact.read_bytes()
+    first = json.loads(first_bytes)
+    assert first["membership_change"]["previous"] is None
+    assert "first run" in first["membership_change"]["note"]
+    assert "added" not in first["membership_change"]
+
+    bundle_path.write_text(blocks((b"B", ""), (b"C", ""), (b"D", "")), encoding="utf-8")
+    assert run_main(*argv) == 0
+    second = json.loads(artifact.read_text("utf-8"))
+    change = second["membership_change"]
+
+    assert change["comparable"] is True
+    assert change["added"] == sorted([digest_of(b"C"), digest_of(b"D")])
+    assert change["removed"] == [digest_of(b"A")]
+    assert change["counts"] == {"added": 2, "removed": 1, "unchanged": 1}
+    previous = change["previous"]
+    assert previous["file_sha256"] == hashlib.sha256(first_bytes).hexdigest()
+    assert previous["retrieved_at"] == first["retrieved_at"]
+    assert previous["distinct_certificates"] == 2
+    # The superseded membership is reconstructible from the artifact that replaced it.
+    now = {r["sha256"] for r in second["certificates"]}
+    assert (now - set(change["added"])) | set(change["removed"]) == {
+        r["sha256"] for r in first["certificates"]
+    }
+
+    # An unchanged rerun diffs to nothing, and says so with counts rather than by omission.
+    assert run_main(*argv) == 0
+    third = json.loads(artifact.read_text("utf-8"))["membership_change"]
+    assert third["counts"] == {"added": 0, "removed": 0, "unchanged": 3}
+    assert third["added"] == third["removed"] == []
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        pytest.param(b"not json", "unreadable", id="not-json"),
+        pytest.param(b'{"program": "fixture.diffed"}', "unreadable", id="no-certificates"),
+        pytest.param(
+            b'{"program": "other", "certificates": []}',
+            "is for program 'other'",
+            id="other-program",
+        ),
+    ],
+)
+def test_a_previous_artifact_that_cannot_be_compared_is_not_diffed_as_empty(
+    tmp_path: Path, content: bytes, reason: str
+) -> None:
+    """A corrupt or foreign previous file is named and refused, never read as a program that trusted nothing."""
+    previous = tmp_path / "store" / "fixture.diffed.json"
+    previous.parent.mkdir()
+    previous.write_bytes(content)
+
+    change = collect_bundle.membership_change(previous, "fixture.diffed", {digest_of(b"A")})
+
+    assert change["comparable"] is False
+    assert reason in str(change["reason"])
+    assert "added" not in change
+    named = change["previous"]
+    assert isinstance(named, dict)
+    assert named["path"] == str(previous)
+    assert named["file_sha256"] == hashlib.sha256(content).hexdigest()
+
+
 def test_a_reader_that_prints_pem_yields_the_same_digests_as_a_file(tmp_path: Path) -> None:
     """`ta.readers_via_command`: node, keytool and python are read through one seam, so the seam is pinned.
 
@@ -866,6 +944,55 @@ def test_lowercase_begin_boundary_is_not_a_block() -> None:
     assert set(seen) == {digest_of(b"B")}
     assert entry(seen, b"B")["subject"] is None
     assert entry(seen, b"B")["alias"] is None
+
+
+@pytest.mark.parametrize("label", ["X509 CERTIFICATE", "X.509 CERTIFICATE"])
+def test_a_legacy_label_is_counted_and_warned_about_but_never_hashed(
+    tmp_path: Path, label: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`ta.pem_armour`: RFC 7468 section 5.1 says parsers SHOULD NOT treat these labels as "CERTIFICATE".
+
+    The same section allows a backwards-compatible exception "potentially together with a warning"; this
+    collector takes the strict reading for the digest set and the lenient one for the run: the block is
+    counted and warned about, its bytes never become a digest, and the bundle around it is still read. Its
+    base64 lines must not name the real block below it either.
+    """
+    legacy = pem_for(b"A").replace("BEGIN CERTIFICATE", f"BEGIN {label}")
+    legacy = legacy.replace("END CERTIFICATE", f"END {label}")
+    text = f"# Subject: CN=Legacy\n{legacy}\n{pem_for(b'B')}\n"
+
+    seen, counts = collect_bundle.index_pem(text, program="fixture")
+
+    assert counts["legacy_label_blocks"] == 1
+    assert set(seen) == {digest_of(b"B")}
+    assert entry(seen, b"B")["subject"] is None
+    assert counts["pem_blocks"] == counts["distinct_certificates"] == 1
+    assert counts["malformed_blocks"] == 0
+
+    bundle_path = tmp_path / "legacy.pem"
+    bundle_path.write_text(text, encoding="utf-8")
+    assert (
+        run_main("--data", str(tmp_path), "--program", "fixture.legacy", "--path", str(bundle_path))
+        == 0
+    )
+    assert "legacy" in capsys.readouterr().err
+    doc = json.loads((tmp_path / "store" / "fixture.legacy.json").read_text("utf-8"))
+    assert doc["counts"]["legacy_label_blocks"] == 1
+    assert [r["sha256"] for r in doc["certificates"]] == [digest_of(b"B")]
+
+
+def test_a_conforming_bundle_reports_no_legacy_label_and_no_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bundle_path = tmp_path / "plain.pem"
+    bundle_path.write_text(bundle("", ""), encoding="utf-8")
+    assert (
+        run_main("--data", str(tmp_path), "--program", "fixture.plain", "--path", str(bundle_path))
+        == 0
+    )
+    assert "legacy" not in capsys.readouterr().err
+    doc = json.loads((tmp_path / "store" / "fixture.plain.json").read_text("utf-8"))
+    assert doc["counts"]["legacy_label_blocks"] == 0
 
 
 def ten_megabytes_of_base64() -> str:
