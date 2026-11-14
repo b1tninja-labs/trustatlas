@@ -115,10 +115,9 @@ REGISTRY: tuple[dict[str, Any], ...] = (
             "python.schannel",
             "--reader",
             "py",
-            "--reader-arg",
-            "-c",
-            "--reader-arg",
-            "<emit # Subject: + PEM from get_ca_certs()>",
+            # Joined by `=`: argparse refuses `--reader-arg -c` as two words (row ta.reader_arg_form).
+            "--reader-arg=-c",
+            "--reader-arg=<emit # Subject: + PEM from get_ca_certs()>",
         ],
         "origin": "the OS store as crypt32 enumerates it, narrowed by purpose",
         "artifact": "python.schannel.json",
@@ -362,9 +361,9 @@ def host() -> str:
 def mtime_utc(path: Path) -> str | None:
     """When the thing itself last changed: the file, or the binary a store is compiled into."""
     try:
-        return datetime.datetime.fromtimestamp(
-            path.stat().st_mtime, datetime.UTC
-        ).isoformat(timespec="seconds")
+        return datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.UTC).isoformat(
+            timespec="seconds"
+        )
     except OSError:
         return None
 
@@ -388,9 +387,7 @@ def _version(exe: str, argv: list[str]) -> str:
     return out.splitlines()[0][:120] if out else "no output"
 
 
-def artifact_state(
-    data: str, name: str | None, store: str | None = None
-) -> dict[str, Any]:
+def artifact_state(data: str, name: str | None, store: str | None = None) -> dict[str, Any]:
     """What the last collection said, read from the artifact rather than remembered.
 
     `store` matters because several rows share one artifact: Root, AuthRoot and Disallowed all live in
@@ -431,7 +428,7 @@ def presence(entry: dict[str, Any]) -> dict[str, Any]:
     The dispatch reads the row's own reader, because a row that names a reader is testable and one that names
     only a location is not: `Cert:\\LocalMachine\\Root` is not a path and a URL is not a file.
     """
-    reader = [a for a in (entry.get("reader") or [])]
+    reader = list(entry.get("reader") or [])
     # Rows name the script as it is invoked ("collect_java.py"), so the dispatch has to compare the stem.
     # Missing that made java.cacerts report "no" on a host with a JDK installed: a registry that lies about
     # reachability is worse than no registry, because the whole point is that the table is trusted.
@@ -451,7 +448,8 @@ def presence(entry: dict[str, Any]) -> dict[str, Any]:
         }
     if head == "collect_java":
         try:
-            from collect_java import find_keystore  # noqa: PLC0415 - same directory, optional by design
+            # Same directory, optional by design.
+            from collect_java import find_keystore
         except ImportError as exc:
             return {"reachable": False, "why": f"collect_java.py unreadable: {exc}"}
         keystore, _looked = find_keystore(None)
@@ -477,10 +475,10 @@ def presence(entry: dict[str, Any]) -> dict[str, Any]:
         if importlib.util.find_spec("certifi") is None:
             return {"reachable": False, "why": "certifi not installed here"}
         try:
-            import certifi  # noqa: PLC0415
+            import certifi
 
             where = certifi.where()
-        except Exception as exc:  # noqa: BLE001 - a broken package is a fact about the host, not a crash
+        except Exception as exc:  # a broken package is a fact about the host, not a crash
             return {
                 "reachable": False,
                 "why": f"certifi importable but unusable: {exc}",
@@ -528,9 +526,7 @@ def probe(data: str) -> list[dict[str, Any]]:
                 "reader": entry["reader"],
                 "note": entry.get("note"),
                 "host": seen,
-                "last_collection": artifact_state(
-                    data, entry.get("artifact"), _store_flag(entry)
-                ),
+                "last_collection": artifact_state(data, entry.get("artifact"), _store_flag(entry)),
             }
         )
     return rows
@@ -547,9 +543,9 @@ def report(rows: list[dict[str, Any]]) -> None:
             f"{row['id']:<26}"
             f"{('yes' if host.get('reachable') else 'no'):<7}"
             f"{row['confidence']:<11}"
-            f"{str(col.get('anchors') if col.get('collected') else '-'):<9}"
+            f"{col.get('anchors') if col.get('collected') else '-'!s:<9}"
             f"{str(host.get('last_change') or host.get('version') or '-')[:20]:<21}"
-            f"{str(col.get('retrieved_at') or col.get('reason') or '-')}"
+            f"{col.get('retrieved_at') or col.get('reason') or '-'!s}"
         )
     reachable = sum(1 for r in rows if r["host"].get("reachable"))
     collected = sum(1 for r in rows if r["last_collection"].get("collected"))
@@ -565,9 +561,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
-    parser.add_argument(
-        "--probe", action="store_true", help="measure the table against this host"
-    )
+    parser.add_argument("--probe", action="store_true", help="measure the table against this host")
     parser.add_argument(
         "--list", action="store_true", help="print the rows without touching the host"
     )
@@ -577,11 +571,7 @@ def main() -> int:
     if args.show:
         for entry in REGISTRY:
             if entry["id"] == args.show:
-                print(
-                    json.dumps(
-                        {**entry, "host": presence(entry)}, indent=1, default=str
-                    )
-                )
+                print(json.dumps({**entry, "host": presence(entry)}, indent=1, default=str))
                 return 0
         known = ", ".join(e["id"] for e in REGISTRY)
         print(f"no row {args.show!r}. Known: {known}", file=sys.stderr)

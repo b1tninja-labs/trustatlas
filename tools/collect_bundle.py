@@ -13,6 +13,10 @@ is missing — that is the point of the hashes-and-counts posture, not an oversi
 Usage:
     python tools/collect_bundle.py --program certifi
     python tools/collect_bundle.py --program curl --path C:\\path\\to\\cacert.pem
+    python tools/collect_bundle.py --program python.x --reader py --reader-arg=-c --reader-arg=CODE
+
+A reader's own flags travel as `--reader-arg=VALUE`, joined by `=`: written as two words, a value that
+starts with `-` is taken by argparse for an option and refused.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import binascii
 import datetime
 import hashlib
 import io
+import itertools
 import json
 import os
 import ssl
@@ -34,6 +39,12 @@ from pathlib import Path
 BEGIN = "-----BEGIN CERTIFICATE-----"
 UA = "trustatlas-collect-bundle/0 (research; read-only; see repository README)"
 END = "-----END CERTIFICATE-----"
+# What the text above a block may be called when it carries no `subject:`/`owner:`/`alias:` key.
+NAME_KEYS = ("subject", "alias")
+# Base64 characters (line breaks included) one block may hold before it is counted as malformed unread.
+# 1 MiB of text is about 768 KiB of DER, far above any trust anchor a program ships; the cap exists so a
+# hostile 10 MB block ends as a count rather than a digest of whatever it was.
+MAX_BLOCK_CHARS = 1 << 20
 
 
 def bundle_path(program: str, explicit: str | None) -> Path | None:
@@ -44,7 +55,7 @@ def bundle_path(program: str, explicit: str | None) -> Path | None:
             import certifi
 
             return Path(certifi.where())
-        except Exception as exc:  # noqa: BLE001 - absent or broken package is a fact about the host
+        except Exception as exc:  # absent or broken package is a fact about the host
             print(
                 f"certifi unavailable ({type(exc).__name__}: {exc}); pass --path",
                 file=sys.stderr,
@@ -63,66 +74,92 @@ def index_pem(
     collectors that derive the digest slightly differently would report an overlap that is a property of
     the code rather than of the trust sets. Any new reader imports this rather than growing its own split.
 
-    `name_key` says what the text above a block is allowed to be called. In a curl or certifi bundle the
-    maintainer's own comment carries a `subject:` line; in `keytool -list -rfc` output the same position
-    holds an *alias*, which is a nickname the keystore chose and not a subject. Recording an alias as a
-    subject would be the exact kind of overstatement this repository's honesty rule refuses, so the caller
-    decides the field name and the value is carried verbatim either way.
+    Every row carries both `subject` and `alias`, `None` when the file does not say. `subject` comes only
+    from a `subject:` or `owner:` line, `alias` only from an `alias:`/`alias name:` line (which is how
+    `pem_from_tar` records an archive member name). In `keytool -list -rfc` output the alias is a nickname
+    the keystore chose and not a subject; recording it as one would be the exact overstatement this
+    repository's honesty rule refuses. `name_key` ("subject" or "alias") only says what an *unkeyed* comment
+    line above a block may be called, and that line is written to `name_key` alone, never to both.
+
+    A header region holding an OpenSSL `Certificate:` text dump is discarded whole and counted in
+    `header_dumps_discarded`; an unterminated block, an empty one, one over `MAX_BLOCK_CHARS` and one that is
+    not base64 are counted in `malformed_blocks`. Nothing in the input ends in an exception.
 
     Returns the digest index and the counts; nothing here names a subject, an SPKI or a validity, because
     naming those is `asn1core`'s job and not this file's.
     """
+    if name_key not in NAME_KEYS:
+        raise ValueError(f"name_key must be one of {NAME_KEYS}, not {name_key!r}")
     seen: dict[str, dict[str, object]] = {}
     duplicates = 0
     malformed = 0
     blocks = 0
+    dumps_discarded = 0
+    # The boundaries are matched as exact, case-sensitive strings (RFC 7468 erratum 4508, verified: the
+    # encapsulation boundaries are case-sensitive), so `-----begin certificate-----` is not a block here.
     chunks = text.split(BEGIN)
-    for previous, block in zip(chunks, chunks[1:]):
-        body, _, _ = block.partition(END)
+    for previous, block in itertools.pairwise(chunks):
+        body, found_end, _ = block.partition(END)
         # Only the text after the previous block's END marker describes this one. Without that cut, a
         # bundle with no per-block comments -- node's compiled-in set -- labels every block after the
         # first with the trailing "-----END CERTIFICATE-----" line: measured 144 of 145 anchors
-        # "named", each name a PEM delimiter. curl and certifi hide the defect because their "# Subject:"
-        # headers are found first on the way backwards.
+        # "named", each name a PEM delimiter.
         header = previous.rpartition(END)[2]
         blocks += 1
+        # An unterminated block and an oversized one are counted refusals: the first is a truncated file,
+        # the second is a hostile or corrupt one, and neither is allowed to become a digest or a crash.
+        if not found_end or len(body) > MAX_BLOCK_CHARS:
+            malformed += 1
+            continue
         try:
             der = base64.b64decode("".join(body.split()), validate=True)
         except (binascii.Error, ValueError):
+            malformed += 1
+            continue
+        if not der:
             malformed += 1
             continue
         digest = hashlib.sha256(der).hexdigest()
         if digest in seen:
             duplicates += 1
             continue
-        # The comment line the bundle's own maintainer wrote above the block. It is a string in the
-        # file, so naming a certificate with it is not parsing one - and without it, a bundle's side
-        # of a difference can only ever be counted. That is the difference between a number and an
-        # answer, and it is why this line exists.
-        # The header block above a block is the bundle maintainer's own comments. The fingerprint
-        # line is used as an independent check on this script's hashing: if the stated SHA-256 of DER
-        # equals the SHA-256 computed here, the PEM split and base64 decode are right for that
-        # certificate, and 120 of them agreeing tests the collector in a way no fixture-based unit
-        # test can. The other lines name it, which is a string in the file, not a parsed field.
-        label, alias, fingerprint = None, None, None
+        # An OpenSSL `Certificate:` text dump in the header region describes some *other* certificate --
+        # AOSP appends one below each PEM, so above the next block it is the previous anchor's -- and its
+        # `Subject:` line would be read as this block's name. `pem_from_tar` drops such dumps, but callers
+        # that bypass it (`collect_java.py`, `verify_provenance.py`, a reader) reach here directly, so the
+        # whole region is discarded unread and counted rather than mined for a name.
+        if any(line.strip().lstrip("#").strip() == "Certificate:" for line in header.splitlines()):
+            dumps_discarded += 1
+            header = ""
+        # The header region above a block is the bundle maintainer's own comments: strings in the file,
+        # so naming a certificate with them is not parsing one. The fingerprint line is an independent
+        # check on this script's hashing: if the stated SHA-256 of DER equals the SHA-256 computed here,
+        # the PEM split and base64 decode are right for that certificate, and 120 of them agreeing tests
+        # the collector in a way no fixture-based unit test can.
+        subject, alias, bare, fingerprint = None, None, None, None
         for line in reversed(header.splitlines()):
             stripped = line.strip().lstrip("#").strip()
             low = stripped.lower()
+            if "-----" in stripped:
+                # Any boundary-looking line -- a stray delimiter, a lowercase `-----begin` that is not a
+                # block -- ends the region: what lies above it belongs to something else.
+                break
             if "fingerprint" in low:
-                if low.startswith("sha256"):
-                    fingerprint = (
-                        stripped.split(":", 1)[-1].strip().replace(":", "").lower()
-                    )
+                if low.startswith("sha256") and fingerprint is None:
+                    fingerprint = stripped.split(":", 1)[-1].strip().replace(":", "").lower()
                 continue
-            # Two labels, kept apart on purpose. `subject:` in a curl or certifi header and `Owner:` in
-            # keytool output are the same claim -- the holder's distinguished name, printed as a string by
-            # whoever assembled the file -- while `Alias name:` in keytool output is a nickname the keystore
-            # chose. Recording an alias as a subject would name a certificate something it does not say.
-            if low.startswith(("subject:", "owner:")) and label is None:
-                label = stripped.split(":", 1)[1].strip()
+            # Two names, kept apart on purpose. `subject:` in a certifi header and `Owner:` in keytool output
+            # are the same claim -- the holder's distinguished name, printed as a string by whoever assembled
+            # the file -- while `Alias name:` in keytool output (and an archive member name, which
+            # `pem_from_tar` writes as one) is a nickname. Recording an alias as a subject would name a
+            # certificate something it does not say. The nearest line of each kind wins.
+            if low.startswith(("subject:", "owner:")):
+                if subject is None:
+                    subject = stripped.split(":", 1)[1].strip() or None
                 continue
-            if low.startswith(("alias name:", "alias:")) and alias is None:
-                alias = stripped.split(":", 1)[1].strip()
+            if low.startswith(("alias name:", "alias:")):
+                if alias is None:
+                    alias = stripped.split(":", 1)[1].strip() or None
                 continue
             if (
                 low.startswith(
@@ -144,23 +181,19 @@ def index_pem(
                 # as the name and stops before it ever reaches "Alias name:", which is what the first run of
                 # collect_java.py did: 109 entries, every one labelled with a date.
                 continue
-            if (
-                "-----" not in stripped
-                and any(c.isalpha() for c in stripped)
-                and label is None
-                and alias is None
-            ):
-                label = stripped
-                break
+            if bare is None and any(c.isalpha() for c in stripped):
+                # A plain comment with no `key:` prefix (curl's "Name" line above its `====` rule). What it
+                # is called is the caller's decision, `name_key`, and it never displaces a labelled line.
+                bare = stripped
         entry: dict[str, object] = {
             "sha256": digest,
             "der_octets": len(der),
-            name_key: label,
+            "subject": subject,
+            "alias": alias,
             "store": program,
         }
-        if name_key != "subject":
-            entry["subject"] = label
-            entry["alias"] = alias
+        if entry[name_key] is None:
+            entry[name_key] = bare
         if fingerprint and len(fingerprint) == 64:
             entry["bundle_fingerprint_agrees"] = fingerprint == digest
         seen[digest] = entry
@@ -170,14 +203,11 @@ def index_pem(
         "distinct_certificates": len(seen),
         "duplicate_blocks": duplicates,
         "malformed_blocks": malformed,
-        "fingerprint_checked": sum(
-            1 for c in seen.values() if "bundle_fingerprint_agrees" in c
-        ),
-        "fingerprint_agrees": sum(
-            1 for c in seen.values() if c.get("bundle_fingerprint_agrees")
-        ),
+        "fingerprint_checked": sum(1 for c in seen.values() if "bundle_fingerprint_agrees" in c),
+        "fingerprint_agrees": sum(1 for c in seen.values() if c.get("bundle_fingerprint_agrees")),
         "named": sum(1 for c in seen.values() if c.get(name_key)),
         "subject_named": sum(1 for c in seen.values() if c.get("subject")),
+        "header_dumps_discarded": dumps_discarded,
     }
     return seen, counts
 
@@ -202,9 +232,7 @@ def pem_from_tar(payload: bytes) -> tuple[str, int, int]:
             if not member.isfile():
                 continue
             name = member.name.lower()
-            if not (
-                name.endswith(".pem") or name.endswith(".0") or name.endswith(".crt")
-            ):
+            if not (name.endswith(".pem") or name.endswith(".0") or name.endswith(".crt")):
                 continue
             handle = tar.extractfile(member)
             if handle is None:
@@ -245,9 +273,7 @@ def main() -> int:
     )
     parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument("--program", default="certifi")
-    parser.add_argument(
-        "--path", default=None, help="PEM bundle to read instead of a default"
-    )
+    parser.add_argument("--path", default=None, help="PEM bundle to read instead of a default")
     parser.add_argument(
         "--url",
         default=None,
@@ -269,13 +295,16 @@ def main() -> int:
         action="append",
         default=[],
         dest="reader_args",
-        help="argument for --reader, repeated. Passed as argv, never through a shell.",
+        help="argument for --reader, repeated, and always written --reader-arg=VALUE: argparse refuses "
+        "a separate value that begins with '-' (--reader-arg -c fails on 3.12 and later alike), so "
+        "--reader-arg=-c is the only spelling that reaches the reader. Passed as argv, never through a shell.",
     )
     parser.add_argument(
         "--reader-name-key",
         default="subject",
+        choices=NAME_KEYS,
         dest="reader_name_key",
-        help='what to call the label a reader prints above a block: "alias" for keytool nicknames',
+        help='what to call an unkeyed comment line above a block: "alias" for keytool nicknames',
     )
     args = parser.parse_args()
 
@@ -290,9 +319,7 @@ def main() -> int:
             return 1
         if done.returncode != 0:
             detail = (done.stderr or done.stdout).strip()[:300]
-            print(
-                f"reader {argv[0]} exited {done.returncode}: {detail}", file=sys.stderr
-            )
+            print(f"reader {argv[0]} exited {done.returncode}: {detail}", file=sys.stderr)
             print(
                 "A reader that will not speak is a fact about the host; nothing was written.",
                 file=sys.stderr,
@@ -311,9 +338,7 @@ def main() -> int:
     elif args.url:
         raw_dir = Path(args.data) / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
-        path = raw_dir / (
-            f"{args.program}.tar.gz" if args.tar else f"{args.program}.pem"
-        )
+        path = raw_dir / (f"{args.program}.tar.gz" if args.tar else f"{args.program}.pem")
         payload = urllib.request.urlopen(  # noqa: S310
             urllib.request.Request(args.url, headers={"User-Agent": UA}),  # noqa: S310
             timeout=90.0,
@@ -343,14 +368,14 @@ def main() -> int:
             **origin_extra,
         }
     else:
-        path = bundle_path(args.program, args.path)
-        if path is None or not path.is_file():
-            print(f"no bundle at {path}", file=sys.stderr)
+        local = bundle_path(args.program, args.path)
+        if local is None or not local.is_file():
+            print(f"no bundle at {local}", file=sys.stderr)
             return 1
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = local.read_text(encoding="utf-8", errors="replace")
         origin = {
-            "path": str(path),
-            "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "path": str(local),
+            "file_sha256": hashlib.sha256(local.read_bytes()).hexdigest(),
             "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER",
         }
 
@@ -360,9 +385,7 @@ def main() -> int:
         "artifact": "trustatlas.bundle.collect",
         "version": 1,
         "program": args.program,
-        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(
-            timespec="seconds"
-        ),
+        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "provenance": {
             **origin,
             "note": (
@@ -371,7 +394,7 @@ def main() -> int:
             ),
         },
         "counts": counts,
-        "certificates": sorted(seen.values(), key=lambda c: str(c["sha256"])),  # type: ignore[arg-type]
+        "certificates": sorted(seen.values(), key=lambda c: str(c["sha256"])),
     }
     out = Path(args.data) / "store" / f"{args.program}.json"
     out.parent.mkdir(parents=True, exist_ok=True)

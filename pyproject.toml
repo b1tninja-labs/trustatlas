@@ -1,0 +1,122 @@
+# This is a toolchain configuration, not a distribution: `[project]` below declares `dependencies = []`
+# and there is deliberately **no `[build-system]` table**. That omission is the whole point — without a
+# build backend nothing here can be built or installed, so `ta.package`, the `[no]` row in `ROADMAP.md` §4,
+# is refused by the file rather than only promised by it. A sibling like `asn1core` carries a
+# `[build-system]` because it ships a wheel; this directory ships scripts and artifacts. If that ever
+# changes it is a decision to record in `AGENTS.md` first, not an edit to make here.
+
+[project]
+name = "trustatlas"
+version = "0"
+description = "Fetchers and provenance validators for the trust-anchor supply chain: which store contains which root, how its bytes arrived, and where two programs disagree"
+readme = "PLAN.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [{ name = "Justin Capella" }]
+# Empty, and that emptiness is the design goal rather than an accident. `AGENTS.md` allows this directory
+# stdlib-only scripts, and `ROADMAP.md` §4 says why: parsing anchors is `asn1core`, path and issuer links
+# are `pkix`, CT is `ctspy`, storage and coverage states are `certledger`. A runtime dependency here would
+# be the first step toward growing a second, laxer PKI in the pipeline — the one thing a trust map cannot
+# survive. So no `certifi` (the collectors take `--url` instead), no `cryptography`, nothing. The image is
+# `python:3.12-slim` with no install step at all, and it stays that way.
+dependencies = []
+
+[project.optional-dependencies]
+# Every pin here matches projecthub's pinned toolchain (`requirements-dev.txt`) exactly, on purpose. A gate
+# whose verdict moves with whatever pip fetched today is weather and not a gate: projecthub's own CI went red
+# on a commit that passed locally because an unpinned `pip install ruff` pulled a version enabling a rule the
+# pinned one accepts. One linter version therefore serves every project in this workspace, and a green here
+# means the same thing as a green there. `mcp` is projecthub's runtime dependency rather than a gate, so it
+# is not repeated here.
+dev = ["ruff==0.15.12", "mypy==1.20.2", "pytest==9.0.3", "coverage==7.17.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `tools` and not `.`: there is no package to import here, only scripts, and the tests item 2 onward add
+# import them by module name (`import collect_bundle`). Putting `.` on the path instead would make pytest
+# prepend the repository root for every test file it collects under a rootdir-relative scheme and invite a
+# future `tools/` module to shadow something real. Scripts stay scripts — nothing in this workspace imports
+# `trustatlas`, and the absence of that name from `sys.modules` is what keeps a stray top-level module in a
+# sibling checkout from being picked up as ours.
+pythonpath = ["tools"]
+addopts = "-ra"
+
+[tool.coverage.run]
+branch = true
+# `source = ["tools"]`, not a package: the code under test is nine scripts and there is no importable
+# distribution to name. This is also why the floor below can be honest — it measures the fetchers, which are
+# the only thing here that could regress.
+source = ["tools"]
+
+[tool.coverage.report]
+# 85, and set before the tests that have to earn it exist. The convention elsewhere in this workspace is a
+# floor at what is measured today, ratcheted up in the commit that implements something; here the direction
+# is reversed on purpose. `ROADMAP.md`'s honesty rule says a row may read `[ok]` only when a named test would
+# fail if the behaviour regressed, and a low floor lets a collector land at 40% with its defect-prone paths —
+# the label walk, the tar extractor, the refusal branches — untouched while the gate still reports green. The
+# number is therefore a promise item 2..8 must keep, not a report of where things stand. It bites only when
+# coverage is actually run (`python -m coverage run -m pytest`): `addopts` carries no `--cov`, so a bare
+# `python -m pytest -q` stays green today with no `tests/` directory yet, and would exit 5 ("no tests ran")
+# if it did. Lowering this line needs the same justification as deleting a test.
+fail_under = 85
+show_missing = true
+exclude_lines = [
+  "if __name__ == .__main__.:",
+  # The refusal paths that end a script rather than return from it. `raise SystemExit(main())` is how every
+  # tool here reports its exit code, and pinning the CLI's contract means calling `main()` directly; the
+  # module boundary itself earns no coverage.
+  "raise SystemExit",
+  "pragma: no cover",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "N", "UP", "SIM", "C4", "PT", "RUF", "S", "RET", "ARG"]
+ignore = [
+  "E501", # line length is the formatter's job
+  # S101 is `assert`, and there is no other way to state an expectation in a test. The rule is off for the
+  # whole tree rather than only under `per-file-ignores` because the tools assert too: `collect_bundle.py`
+  # refuses a bundle whose digests do not add up, which is a self-check and not test code. certledger turns
+  # it off the same way; asn1core leaves it on and carries a written policy naming each line instead.
+  "S101",
+  # S3xx flags reaching the network and running an external binary as if either were the bug. Both are this
+  # directory's entire job: `collect_bundle.py --url` fetches, `--reader keytool` asks a store's own reader to
+  # print its contents so no PKI format gets implemented here. The controls that matter are explicit and each
+  # is a named line in the source — `ssl.create_default_context()` on every fetch, argv passed as a list with
+  # `# noqa: S603` rather than through a shell, byte caps on what a response may be — so silencing the rule
+  # wholesale loses nothing that the code has already stated more precisely. certledger ignores the same
+  # pair for the same reason.
+  #
+  # These three are ignored rather than deleted from `select`, and the difference is what RUF100 enforces: a
+  # suppressed rule stays *known to the linter*, so the `# noqa: S310` / `S603` / `S607` markers that name each
+  # deliberate control stay load-bearing, and RUF100 fails if one is added where nothing was suppressed or left
+  # on a line whose control went away. Dropping `S` from `select` instead would make every one of those markers
+  # an unused directive — 23 of them across the nine tools — which is how a config edit silently turns the
+  # audit trail for "this fetch verifies TLS" into noise.
+  "S310",
+  "S603",
+  "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S101 in tests is the policy, S311 is a fixture's throwaway value rather than a token, and a test double has
+# to accept parameters it ignores, which ARG would otherwise flag.
+"tests/*" = ["S101", "S105", "S106", "S311", "ARG001", "ARG002"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
+# `tools` and not a package, matching the pytest path above. Item 16 runs `mypy tools tests`; both are listed
+# so a bare `python -m mypy` in the directory checks the same thing that gate does rather than staying silent
+# about the suite, where "Success" would otherwise mean something narrower than it reads as.
+files = ["tools", "tests"]
