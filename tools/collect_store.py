@@ -127,6 +127,11 @@ def read_store(
 SERVER_AUTH = "1.3.6.1.5.5.7.3.1"
 
 
+def on_windows() -> bool:
+    """The placement check, named so a test can answer it without rebinding `os.name` for the process."""
+    return os.name == "nt"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -144,7 +149,7 @@ def main() -> int:
     parser.add_argument("--with-der", action="store_true", help="write the certificates too")
     parser.add_argument("--grep", default=None, help="report anchors whose subject contains this")
     args = parser.parse_args()
-    if os.name != "nt":
+    if not on_windows():
         print(
             f"this collector reads the Windows certificate store and cannot run on {sys.platform}.\n"
             "That is placement, not a missing dependency: the realized store of one machine only "

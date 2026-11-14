@@ -429,6 +429,10 @@ def presence(entry: dict[str, Any]) -> dict[str, Any]:
     only a location is not: `Cert:\\LocalMachine\\Root` is not a path and a URL is not a file.
     """
     reader = list(entry.get("reader") or [])
+    if not reader:
+        # Without this the empty name fell through to the PATH lookup and was reported as "'' not on PATH",
+        # which reads as a missing binary rather than a row nobody has written a reader for.
+        return {"reachable": False, "why": "row names no reader"}
     # Rows name the script as it is invoked ("collect_java.py"), so the dispatch has to compare the stem.
     # Missing that made java.cacerts report "no" on a host with a JDK installed: a registry that lies about
     # reachability is worse than no registry, because the whole point is that the table is trusted.
