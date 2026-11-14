@@ -65,6 +65,11 @@ def fetch(candidates: list[str]) -> tuple[bytes, str, list[str], str | None]:
         ) as exc:
             attempts.append(f"{type(exc).__name__}: {str(exc)[:70]} - {url}")
             continue
+        if len(body) > MAX_BYTES:
+            # The read stopped at the cap, so these are not the bytes as delivered; hashing them would
+            # pin a truncation.
+            attempts.append(f"body exceeds {MAX_BYTES} octets; not pinned - {url}")
+            continue
         if not body.startswith(b"MSCF"):
             attempts.append(
                 f"Content-Type {ctype!r}, body is not a CAB ({len(body)} octets) - {url}"
@@ -87,13 +92,23 @@ def main() -> int:
     records: list[dict[str, Any]] = []
     for name, candidates in SOURCES.items():
         cached = raw_dir / f"{name}.cab"
+        stale: list[str] = []
         if cached.is_file() and not args.refresh:
             payload = cached.read_bytes()
+            if not payload.startswith(b"MSCF"):
+                # A cache is held to the same magic check as a fetch, or an empty or truncated file
+                # left by an interrupted run would be pinned as the program.
+                stale.append(f"cache is not a CAB ({len(payload)} octets) - {cached}")
+                payload = b""
+        else:
+            payload = b""
+        if payload:
             source = str(cached) + " (cache)"
             ctype: str | None = "application/vnd.ms-cab-compressed"
             attempts: list[str] = []
         else:
             payload, source, attempts, ctype = fetch(candidates)
+            attempts = stale + attempts
             if not payload:
                 for attempt in attempts:
                     print(f"  ruled out: {attempt}", file=sys.stderr)
