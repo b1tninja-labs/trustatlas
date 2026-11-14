@@ -46,7 +46,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from collect_bundle import index_pem, pem_from_tar  # noqa: E402 - same directory, one implementation
+# Same directory, one implementation. No E402 marker: ruff exempts an import after `sys.path.insert`.
+from collect_bundle import index_pem, pem_from_tar
 
 UA = "trustatlas-provenance/1.0"
 MUST, INFO = "must", "informational"
@@ -294,7 +295,7 @@ def run_check(check: dict[str, Any], data: Path) -> dict[str, Any]:
 
     try:
         payload = get(check["url"])
-    except Exception as exc:  # noqa: BLE001 - a channel that will not answer is the finding, not a crash
+    except Exception as exc:  # a channel that will not answer is the finding, not a crash
         return {
             **result,
             "verdict": "unverifiable",
@@ -313,13 +314,13 @@ def run_check(check: dict[str, Any], data: Path) -> dict[str, Any]:
             }
         published = payload.decode("ascii", errors="replace").split()
         want = (published[0] if published else "").lower()
-        got = sha256(raw.read_bytes())
+        computed = sha256(raw.read_bytes())
         return {
             **result,
-            "verdict": "agree" if want and want == got else "differs",
-            "detail": f"published {want[:16]}... vs computed {got[:16]}...",
+            "verdict": "agree" if want and want == computed else "differs",
+            "detail": f"published {want[:16]}... vs computed {computed[:16]}...",
             "published_digest": want,
-            "computed_digest": got,
+            "computed_digest": computed,
         }
 
     if kind == "byte_mirror":
@@ -336,9 +337,7 @@ def run_check(check: dict[str, Any], data: Path) -> dict[str, Any]:
             path = data / "store" / check["artifact"]
             if path.is_file():
                 doc = json.loads(path.read_text(encoding="utf-8"))
-                ours = str(
-                    (doc.get("provenance") or {}).get("file_sha256") or ""
-                ).lower()
+                ours = str((doc.get("provenance") or {}).get("file_sha256") or "").lower()
         theirs = sha256(payload)
         if not ours:
             return {
@@ -386,9 +385,7 @@ def run_check(check: dict[str, Any], data: Path) -> dict[str, Any]:
         return {
             **result,
             "verdict": "recorded",
-            "detail": "; ".join(
-                f"{w['login']} {w['when']} {w['subject'][:44]}" for w in who
-            ),
+            "detail": "; ".join(f"{w['login']} {w['when']} {w['subject'][:44]}" for w in who),
             "commits": who,
         }
 

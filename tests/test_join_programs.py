@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,7 @@ def test_join_reproduces_from_committed_artifacts(
     assert first["provenance"]["key"] == "certificate SHA-256 of DER"
     # An unfiltered join records that it was unfiltered, not merely the absence of a key.
     assert first["provenance"]["trust_filter"] == {}
+    assert first["provenance"]["trust_filter_not_applied"] == {}
     assert first["provenance"]["totals_before_filter"] == {"a": 5, "b": 4}
 
 
@@ -111,18 +113,83 @@ def test_a_trust_filter_is_recorded_in_the_join_artifact(
         "--b-trust",
         "SERVER_AUTH",
     )
-    assert both["provenance"]["trust_filter"] == {"a": "SERVER_AUTH", "b": "SERVER_AUTH"}
+    # B states no trust bits, so --b-trust is requested and not applied: B keeps all four, and the
+    # artifact lists B under `trust_filter_not_applied`, not under `trust_filter`.
+    assert both["provenance"]["trust_filter"] == {"a": "SERVER_AUTH"}
+    assert set(both["provenance"]["trust_filter_not_applied"]) == {"b"}
+    assert both["provenance"]["trust_filter_not_applied"]["b"]["requested"] == "SERVER_AUTH"
     assert both["provenance"]["totals_before_filter"] == {"a": 5, "b": 4}
+    assert both["counts"] == only_a["counts"]
+    assert both["shared"] == only_a["shared"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="is_delegator's docstring says an artifact that states no trust bits 'is never filtered by this', "
-    "but a row with no `trust` key returns False, so --b-trust over a bundle empties side B",
-)
 def test_a_side_that_states_no_trust_bits_is_not_emptied_by_a_filter(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     write_artifacts(tmp_path)
     doc = join(monkeypatch, tmp_path, tmp_path / "out" / "b.json", "--b-trust", "SERVER_AUTH")
     assert doc["counts"]["b"] == 4
+    # Every count is the unfiltered join's: a filter that could not apply changes nothing but the record.
+    assert doc["counts"] == {"a": 5, "b": 4, "shared": 3}
+
+
+def test_an_unfilterable_side_is_recorded_as_not_filtered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    write_artifacts(tmp_path)
+    doc = join(monkeypatch, tmp_path, tmp_path / "out" / "b.json", "--b-trust", "SERVER_AUTH")
+    # A reader must not take "B is in no filter" for "B was filtered and all four passed": the request is
+    # recorded beside the applied filters, with the reason it did not apply.
+    assert doc["provenance"]["trust_filter"] == {}
+    assert doc["provenance"]["trust_filter_not_applied"] == {
+        "b": {
+            "requested": "SERVER_AUTH",
+            "reason": "the artifact states no trust bits for any anchor, so it is joined unfiltered",
+        }
+    }
+
+
+def test_an_empty_trust_object_states_trust_and_is_filtered_out() -> None:
+    # The real NSS artifact carries one anchor with `trust: {}`. It states trust (for nothing), so NSS stays
+    # filterable as a whole and that anchor is dropped, as it was before the per-artifact rule.
+    rows = [*A_ROWS, {"sha256": h("z1"), "subject": "CN=no bits", "store": "nss", "trust": {}}]
+    assert join_programs.states_trust(rows) is True
+    assert not join_programs.is_delegator(rows[-1], "SERVER_AUTH")
+
+
+def test_a_mixed_artifact_is_refused_rather_than_filtered_per_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_artifacts(tmp_path)
+    mixed = {
+        "program": "mixed",
+        "anchors": [*A_ROWS, {"sha256": h("silent"), "subject": "CN=silent"}],
+    }
+    (tmp_path / "store" / "a.json").write_text(json.dumps(mixed), encoding="utf-8")
+    out = tmp_path / "out" / "mixed.json"
+    argv = ["join_programs.py", "--data", str(tmp_path), "--a", "a.json", "--b", "b.json"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--out", str(out), "--a-trust", "SERVER_AUTH"])
+    assert join_programs.main() == 2
+    assert "mixed artifact" in capsys.readouterr().err
+    assert not out.exists()
+    # Unfiltered, the same artifact joins normally: the refusal is about the filter, not the rows.
+    assert join_programs.states_trust([{"sha256": h("x")}]) is False
+
+
+def test_cli_exit_code_is_mains_return(tmp_path: Path) -> None:
+    write_artifacts(tmp_path)
+    script = Path(join_programs.__file__)
+    base = [sys.executable, str(script), "--data", str(tmp_path), "--b", "b.json"]
+
+    def run(*extra: str) -> subprocess.CompletedProcess[str]:
+        # argv is a list against the interpreter running this suite and the script it imported; no shell.
+        return subprocess.run(  # noqa: S603
+            [*base, *extra], capture_output=True, text=True, check=False
+        )
+
+    ok = run("--a", "a.json")
+    assert ok.returncode == 0, ok.stderr
+    assert run("--a", "absent.json").returncode == 1
+    mixed = {"program": "mixed", "anchors": [*A_ROWS, {"sha256": h("silent")}]}
+    (tmp_path / "store" / "mixed.json").write_text(json.dumps(mixed), encoding="utf-8")
+    assert run("--a", "mixed.json", "--a-trust", "SERVER_AUTH").returncode == 2

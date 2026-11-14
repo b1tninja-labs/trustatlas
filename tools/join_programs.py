@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +33,8 @@ def load(data: str, name: str) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        print(
-            f"cannot read artifact {path}: {type(exc).__name__}: {exc}", file=sys.stderr
-        )
-        raise SystemExit(1)
+        print(f"cannot read artifact {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def index(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -47,13 +46,39 @@ def is_delegator(row: dict[str, Any], bit: str) -> bool:
     """Whether the program lets this anchor issue under one trust bit.
 
     NSS states bits per object (`SERVER_AUTH: TRUSTED_DELEGATOR`), which is why the same file can carry
-    an S/MIME-only root and a TLS root and count both. Bundles and keystores state no bits at all, so
-    an artifact that says nothing is never filtered by this -- absence of a claim is not a claim of
-    exclusion, and treating it as one would silently delete half a trust set.
+    an S/MIME-only root and a TLS root and count both. This answers for one row that states trust, and a
+    row whose `trust` is present but empty (an NSS object with no trust record) states that it is a
+    delegator for nothing. Whether a filter applies at all is `states_trust`'s question, asked of the
+    whole artifact before this one is asked of any row.
     """
     trust = row.get("trust") or {}
     value = trust.get(bit)
     return isinstance(value, str) and value.endswith("_DELEGATOR")
+
+
+def states_trust(rows: Iterable[dict[str, Any]]) -> bool:
+    """Whether a trust-bit filter can be applied to this artifact: decided per artifact, not per row.
+
+    A row states trust when it carries a `trust` key, even an empty one. Bundles and keystores (curl,
+    certifi, Java) state no bits for any row, so an artifact that says nothing is never filtered --
+    absence of a claim is not a claim of exclusion, and treating it as one would silently delete the
+    whole side. Such a side is joined unfiltered and the join artifact records that the filter was
+    requested and not applied, so "unfiltered" is never read as "filtered and everything passed".
+
+    A mixed artifact, where some rows state trust and others do not, is refused with `ValueError`
+    rather than filtered per row: dropping the silent rows would invent exclusions and keeping them
+    would invent inclusions, and either makes the filtered count a claim the artifact did not make.
+    No collector writes such an artifact today, so a mixed one is a collector bug to surface.
+    """
+    stated = [("trust" in row) for row in rows]
+    if not any(stated):
+        return False
+    if not all(stated):
+        raise ValueError(
+            f"{stated.count(False)} of {len(stated)} rows state no trust bits while the rest do; "
+            "refusing to filter a mixed artifact per row"
+        )
+    return True
 
 
 def main() -> int:
@@ -61,9 +86,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
-    parser.add_argument(
-        "--a", required=True, help="first artifact (a store or bundle JSON)"
-    )
+    parser.add_argument("--a", required=True, help="first artifact (a store or bundle JSON)")
     parser.add_argument("--b", required=True, help="second artifact")
     parser.add_argument(
         "--only", default="both", choices=("both", "a", "b"), help="list remainders"
@@ -85,17 +108,34 @@ def main() -> int:
     doc_a, doc_b = load(args.data, args.a), load(args.data, args.b)
     a, b = index(doc_a), index(doc_b)
     totals = {"a": len(a), "b": len(b)}
+    applied: dict[str, str] = {}
+    not_applied: dict[str, dict[str, str]] = {}
     for bit, side in ((args.a_trust, "a"), (args.b_trust, "b")):
         if not bit:
             continue
-        kept = {
-            k: v for k, v in (a if side == "a" else b).items() if is_delegator(v, bit)
-        }
-        (a if side == "a" else b).clear()
-        (a if side == "a" else b).update(kept)
+        rows = a if side == "a" else b
+        try:
+            filterable = states_trust(rows.values())
+        except ValueError as exc:
+            print(f"cannot apply --{side}-trust {bit}: {exc}", file=sys.stderr)
+            return 2
+        if not filterable:
+            not_applied[side] = {
+                "requested": bit,
+                "reason": "the artifact states no trust bits for any anchor, so it is joined unfiltered",
+            }
+            print(
+                f"  {side} not filtered by {bit}: the artifact states no trust bits, "
+                f"so all {totals[side]} anchors are kept"
+            )
+            continue
+        kept = {k: v for k, v in rows.items() if is_delegator(v, bit)}
+        rows.clear()
+        rows.update(kept)
+        applied[side] = bit
         print(
             f"  {side} filtered to {len(kept)} anchors trusted as {bit} delegators "
-            f"(of {totals[side]}); the rest are trusted for other purposes or state nothing"
+            f"(of {totals[side]}); the rest are trusted for other purposes or for none"
         )
     shared = sorted(set(a) & set(b))
     only_a = sorted(set(a) - set(b))
@@ -132,16 +172,11 @@ def main() -> int:
             # neither is a subject. Falling back to the digest prefix here would hide the one name this
             # side has, so every non-subject name the artifacts do carry is tried, in that order.
             name = (
-                row.get("subject")
-                or row.get("alias")
-                or row.get("labels")
-                or digest[:16] + "..."
+                row.get("subject") or row.get("alias") or row.get("labels") or digest[:16] + "..."
             )
             print(f"  only in {doc_b.get('program')}: {name}")
         if len(only_b) > 20:
-            print(
-                f"  ... {len(only_b) - 20} more, all hash-only: a bundle artifact names nothing"
-            )
+            print(f"  ... {len(only_b) - 20} more, all hash-only: a bundle artifact names nothing")
 
     if args.out:
         doc = {
@@ -152,11 +187,11 @@ def main() -> int:
                 "a": args.a,
                 "b": args.b,
                 "key": "certificate SHA-256 of DER",
-                "trust_filter": {
-                    side: bit
-                    for side, bit in (("a", args.a_trust), ("b", args.b_trust))
-                    if bit
-                },
+                # Only filters that were applied. A requested filter over a side that states no trust
+                # bits is listed in `trust_filter_not_applied` instead, so a side absent from
+                # `trust_filter` was joined unfiltered, never "filtered and every anchor passed".
+                "trust_filter": applied,
+                "trust_filter_not_applied": not_applied,
                 "totals_before_filter": totals,
                 "limit": (
                     "two certificates holding one key are two entries, so the overlap understates "
@@ -177,4 +212,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

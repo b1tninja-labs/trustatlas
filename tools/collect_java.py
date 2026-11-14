@@ -107,9 +107,7 @@ def main() -> int:
     )
     parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument("--program", default=DEFAULT_PROGRAM)
-    parser.add_argument(
-        "--keystore", default=None, help="cacerts path; discovered if omitted"
-    )
+    parser.add_argument("--keystore", default=None, help="cacerts path; discovered if omitted")
     parser.add_argument(
         "--storepass",
         default=DEFAULT_STOREPASS,
@@ -147,9 +145,7 @@ def main() -> int:
     if done.returncode != 0:
         detail = (done.stderr or done.stdout).strip()[:400]
         print(f"keytool exited {done.returncode}: {detail}", file=sys.stderr)
-        print(
-            "A keystore that will not open is a fact about the host.", file=sys.stderr
-        )
+        print("A keystore that will not open is a fact about the host.", file=sys.stderr)
         return 1
 
     raw = keystore.read_bytes()
@@ -159,9 +155,7 @@ def main() -> int:
         "artifact": "trustatlas.bundle.collect",
         "version": 1,
         "program": args.program,
-        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(
-            timespec="seconds"
-        ),
+        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "provenance": {
             "keystore": str(keystore),
             "keystore_sha256": hashlib.sha256(raw).hexdigest(),
@@ -182,7 +176,7 @@ def main() -> int:
             ),
         },
         "counts": counts,
-        "certificates": sorted(seen.values(), key=lambda c: str(c["sha256"])),  # type: ignore[arg-type]
+        "certificates": sorted(seen.values(), key=lambda c: str(c["sha256"])),
     }
     out = Path(args.data) / "store" / f"{args.program}.json"
     out.parent.mkdir(parents=True, exist_ok=True)

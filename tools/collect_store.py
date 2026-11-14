@@ -29,7 +29,7 @@ import datetime
 import json
 import os
 import platform
-import subprocess  # noqa: S404 - the OS certificate store is only reachable through the OS provider
+import subprocess  # the OS certificate store is only reachable through the OS provider
 import sys
 from pathlib import Path
 from typing import Any
@@ -38,7 +38,7 @@ DEFAULT_STORES = ("Root", "AuthRoot", "Disallowed")
 # Collectable, but not collected by default: adding CA to the default set would change what the machine
 # artifact claims (its counts and every join computed from it), and CA is only interesting because one
 # runtime turns its contents into trust anchors.
-COLLECTABLE_STORES = DEFAULT_STORES + ("CA", "My", "Trust")
+COLLECTABLE_STORES = (*DEFAULT_STORES, "CA", "My", "Trust")
 
 # Ask Windows PowerShell's certificate provider for each anchor and emit one JSON object. The fields
 # are what Windows computes and reports; nothing here is derived from the DER bytes themselves.
@@ -132,9 +132,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
-    parser.add_argument(
-        "--store", action="append", choices=COLLECTABLE_STORES, help="repeatable"
-    )
+    parser.add_argument("--store", action="append", choices=COLLECTABLE_STORES, help="repeatable")
     parser.add_argument(
         "--location",
         choices=("LocalMachine", "CurrentUser"),
@@ -143,12 +141,8 @@ def main() -> int:
         "is the one an incident needs to know about: it applies to this user's browsers and "
         "nothing else on the machine, and the machine-level artifact cannot see it.",
     )
-    parser.add_argument(
-        "--with-der", action="store_true", help="write the certificates too"
-    )
-    parser.add_argument(
-        "--grep", default=None, help="report anchors whose subject contains this"
-    )
+    parser.add_argument("--with-der", action="store_true", help="write the certificates too")
+    parser.add_argument("--grep", default=None, help="report anchors whose subject contains this")
     args = parser.parse_args()
     if os.name != "nt":
         print(
@@ -173,7 +167,7 @@ def main() -> int:
         print("the provider returned no anchors; nothing is claimed")
         return 1
 
-    per_store: dict[str, int] = {store: 0 for store in stores}
+    per_store: dict[str, int] = dict.fromkeys(stores, 0)
     by_hash: dict[str, list[str]] = {}
     server_auth = 0
     eku_absent = 0
@@ -256,9 +250,7 @@ def main() -> int:
     # `windows.user.json` would have silently replaced the user ROOT artifact collected an hour earlier,
     # and two artifacts with the same name are read as one store by anything downstream.
     slug = (
-        ""
-        if stores == list(DEFAULT_STORES)
-        else "-" + "-".join(store.lower() for store in stores)
+        "" if stores == list(DEFAULT_STORES) else "-" + "-".join(store.lower() for store in stores)
     )
     dest = out_dir / f"windows.{hive}{slug}.json"
     dest.write_bytes((json.dumps(doc, indent=1) + "\n").encode("utf-8"))

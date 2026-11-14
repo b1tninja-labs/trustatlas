@@ -39,6 +39,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import binascii
 import datetime
 import hashlib
 import json
@@ -131,7 +132,9 @@ def find_asn1core(explicit: str | None) -> tuple[Path | None, list[str]]:
     for _ in range(4):
         candidates.append(here.parent / "asn1core" / "tools" / "collect_anchors.py")
         here = here.parent
-    looked.append("asn1core/tools/collect_anchors.py beside this repository, walking up four levels")
+    looked.append(
+        "asn1core/tools/collect_anchors.py beside this repository, walking up four levels"
+    )
     for candidate in candidates:
         if candidate.is_file():
             return candidate, looked
@@ -156,9 +159,7 @@ def claimed_rows(doc: dict[str, Any]) -> list[dict[str, Any]]:
     return [r for r in rows if isinstance(r, dict) and r.get("sha256")]
 
 
-def run_reader(
-    script: Path, kind: str, raw: Path, program: str, out: Path
-) -> tuple[int, str]:
+def run_reader(script: Path, kind: str, raw: Path, program: str, out: Path) -> tuple[int, str]:
     """Ask asn1core's reader for the identity of one retained payload.
 
     `--out` is a scratch path under the artifact's own name: the reader writes a document whose provenance
@@ -219,7 +220,7 @@ def extract_dir(raw: Path, near: Path) -> Path:
                     break
                 try:
                     der = base64.b64decode(b"".join(chunk[start:stop].split()), validate=True)
-                except (ValueError, base64.binascii.Error):
+                except (ValueError, binascii.Error):
                     chunk = chunk[stop + len(end) :]
                     continue
                 if der:
@@ -236,9 +237,7 @@ def claims(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(r.get("sha256", "")).lower(): r for r in rows if r.get("sha256")}
 
 
-def compare(
-    claimed: list[dict[str, Any]], derived: dict[str, dict[str, Any]]
-) -> dict[str, Any]:
+def compare(claimed: list[dict[str, Any]], derived: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Does the certificate set an artifact states match the one asn1core read from the raw bytes?
 
     This is `verify_provenance.py`'s internal-rederive check carried up to the key level: a difference means
@@ -255,7 +254,9 @@ def compare(
         for field in CLAIM_FIELDS:
             left, right = got[digest].get(field), derived[digest].get(field)
             if left and right and str(left) != str(right):
-                field_diffs.append({"sha256": digest, "field": field, "artifact": left, "derived": right})
+                field_diffs.append(
+                    {"sha256": digest, "field": field, "artifact": left, "derived": right}
+                )
     return {
         "artifact_certificates": len(got),
         "derived_certificates": len(derived),
@@ -356,7 +357,7 @@ def _git_head(repo: Path) -> str | None:
     """The commit the reader ran from, so an artifact names the parser that produced it. None off a checkout."""
     try:
         done = subprocess.run(  # noqa: S603 - fixed argv against a directory we just resolved
-            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],  # noqa: S607 - git from PATH
             capture_output=True,
             text=True,
             timeout=20,
@@ -407,7 +408,10 @@ def check_one(
     try:
         identity = json.loads(out.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"  REFUSED {name}: reader output unreadable: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"  REFUSED {name}: reader output unreadable: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         row.update({"state": REFUSED, "why": "reader output was not JSON"})
         return 1, row
 
@@ -537,8 +541,7 @@ def main(argv: list[str] | None = None) -> int:
     wanted = list(args.stores) or (list(SOURCES) if args.all else [])
     if not wanted:
         print(
-            "no store named; pass one of "
-            f"{', '.join(SOURCES)}, or --all, or --list",
+            f"no store named; pass one of {', '.join(SOURCES)}, or --all, or --list",
             file=sys.stderr,
         )
         return 2
@@ -555,9 +558,7 @@ def main(argv: list[str] | None = None) -> int:
     data = Path(args.data)
     script, looked = find_asn1core(args.asn1core)
     if script is None:
-        print(
-            "cannot find asn1core/tools/collect_anchors.py. Looked at:", file=sys.stderr
-        )
+        print("cannot find asn1core/tools/collect_anchors.py. Looked at:", file=sys.stderr)
         for entry in looked:
             print(f"  {entry}", file=sys.stderr)
         print(

@@ -90,15 +90,14 @@ def main() -> int:
         if cached.is_file() and not args.refresh:
             payload = cached.read_bytes()
             source = str(cached) + " (cache)"
-            ctype, attempts = "application/vnd.ms-cab-compressed", []
+            ctype: str | None = "application/vnd.ms-cab-compressed"
+            attempts: list[str] = []
         else:
             payload, source, attempts, ctype = fetch(candidates)
             if not payload:
                 for attempt in attempts:
                     print(f"  ruled out: {attempt}", file=sys.stderr)
-                records.append(
-                    {"source_id": name, "error": "unavailable", "attempts": attempts}
-                )
+                records.append({"source_id": name, "error": "unavailable", "attempts": attempts})
                 continue
             cached.write_bytes(payload)
         records.append(
@@ -108,21 +107,17 @@ def main() -> int:
                 "media_type": ctype,
                 "octets": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
-                "transport": "http"
-                if source.startswith("http://")
-                else "https-or-cache",
+                "transport": "http" if source.startswith("http://") else "https-or-cache",
                 "ruled_out": attempts,
                 "decoded": False,
             }
         )
 
-    doc = {
+    doc: dict[str, Any] = {
         "artifact": "trustatlas.ctl.collect",
         "version": 1,
         "program": "Microsoft/Windows program, as published CTLs",
-        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(
-            timespec="seconds"
-        ),
+        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "provenance": {
             "method": "GET, check the CAB magic, hash the bytes",
             "decode": (

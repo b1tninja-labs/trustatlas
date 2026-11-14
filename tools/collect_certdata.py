@@ -102,29 +102,23 @@ def parse(text: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
                 i += 1
             value = unescape_octal(block)
             if not value:
-                notes.append(
-                    f"label {label!r}: CKA_VALUE decoded to zero bytes; skipped"
-                )
+                notes.append(f"label {label!r}: CKA_VALUE decoded to zero bytes; skipped")
                 value = None
         elif (match := TRUST_RE.match(line)) and label is not None:
             trust[match.group(1)] = match.group(2).removeprefix("CKT_NSS_")
         i += 1
     if value is not None and label is not None:
         digest = hashlib.sha256(value).hexdigest()
-        record = by_hash.setdefault(
-            digest, {"sha256": digest, "labels": [], "trust": {}}
-        )
+        record = by_hash.setdefault(digest, {"sha256": digest, "labels": [], "trust": {}})
         if label not in record["labels"]:
             record["labels"].append(label)
         record["trust"].update(trust)
     for label_name, bits in trust_by_label.items():
-        match = next((r for r in by_hash.values() if label_name in r["labels"]), None)
-        if match is None:
-            notes.append(
-                f"trust object labelled {label_name!r} matches no certificate; kept aside"
-            )
+        target = next((r for r in by_hash.values() if label_name in r["labels"]), None)
+        if target is None:
+            notes.append(f"trust object labelled {label_name!r} matches no certificate; kept aside")
             continue
-        match["trust"].update(bits)
+        target["trust"].update(bits)
     return by_hash, notes
 
 
@@ -134,9 +128,7 @@ def main() -> int:
     )
     parser.add_argument("--data", default=os.environ.get("TRUSTATLAS_DATA", "/data"))
     parser.add_argument("--path", default=None, help="a certdata.txt already on disk")
-    parser.add_argument(
-        "--refresh", action="store_true", help="re-download even if cached"
-    )
+    parser.add_argument("--refresh", action="store_true", help="re-download even if cached")
     args = parser.parse_args()
 
     raw_dir = Path(args.data) / "raw"
@@ -175,30 +167,22 @@ def main() -> int:
                 print(f"ruled out: {attempt}", file=sys.stderr)
             return 1
         if attempts:
-            print(
-                f"  {len(attempts)} candidate(s) ruled out before the one that served the dump"
-            )
+            print(f"  {len(attempts)} candidate(s) ruled out before the one that served the dump")
         cached.write_bytes(payload)
         (raw_dir / "mozilla.nss.certdata.attempts.json").write_bytes(
-            (
-                json.dumps({"won": source, "ruled_out": attempts}, indent=1) + "\n"
-            ).encode("utf-8")
+            (json.dumps({"won": source, "ruled_out": attempts}, indent=1) + "\n").encode("utf-8")
         )
     text = payload.decode("utf-8", errors="replace")
 
     by_hash, notes = parse(text)
     stated = sum(
-        1
-        for r in by_hash.values()
-        if r["trust"].get("SERVER_AUTH") == "TRUSTED_DELEGATOR"
+        1 for r in by_hash.values() if r["trust"].get("SERVER_AUTH") == "TRUSTED_DELEGATOR"
     )
     doc = {
         "artifact": "trustatlas.certdata.collect",
         "version": 1,
         "program": "Mozilla/NSS built-ins",
-        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(
-            timespec="seconds"
-        ),
+        "retrieved_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "provenance": {
             "source": source,
             "octets": len(payload),
@@ -213,9 +197,7 @@ def main() -> int:
         "counts": {
             "certificates": len(by_hash),
             "stated_server_auth_trusted": stated,
-            "unmatched_trust_objects": sum(
-                1 for n in notes if "matches no certificate" in n
-            ),
+            "unmatched_trust_objects": sum(1 for n in notes if "matches no certificate" in n),
         },
         "anchors": sorted(
             (
@@ -236,9 +218,7 @@ def main() -> int:
     }
     out = Path(args.data) / "store" / "mozilla.nss.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(
-        (json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
-    )
+    out.write_bytes((json.dumps(doc, indent=1, ensure_ascii=False) + "\n").encode("utf-8"))
     print(
         f"NSS built-ins: {len(by_hash)} certificates, {stated} stated trusted for server "
         f"authentication ({len(payload)} octets, {len(notes)} notes) -> {out}"

@@ -94,7 +94,10 @@ SOURCES: list[tuple[str, str, list[str]]] = [
     (
         "debian.ca_certificates",
         "distro",
-        ["https://salsa.debian.org/debian/ca-certificates/-/raw/master/debian/certs", "https://salsa.debian.org/debian/ca-certificates"],
+        [
+            "https://salsa.debian.org/debian/ca-certificates/-/raw/master/debian/certs",
+            "https://salsa.debian.org/debian/ca-certificates",
+        ],
     ),
     (
         "openjdk.cacerts",
@@ -107,17 +110,35 @@ SOURCES: list[tuple[str, str, list[str]]] = [
     (
         "microsoft.trusted_root",
         "os",
-        ["https://learn.microsoft.com/en-us/security/trusted-root/participation-list", "https://www.microsoft.com/pki/certs/MicRooCerAut_2010-06-23.crt"],
+        [
+            "https://learn.microsoft.com/en-us/security/trusted-root/participation-list",
+            "https://www.microsoft.com/pki/certs/MicRooCerAut_2010-06-23.crt",
+        ],
     ),
     ("apple.program_page", "program", ["https://www.apple.com/certificateauthority/"]),
     ("iana.dnssec.root_anchors", "dnssec", ["https://data.iana.org/root-anchors/root-anchors.xml"]),
-    ("iana.registrar_ids", "naming", ["https://www.iana.org/assignments/registrar-ids/registrar-ids.xml"]),
+    (
+        "iana.registrar_ids",
+        "naming",
+        ["https://www.iana.org/assignments/registrar-ids/registrar-ids.xml"],
+    ),
     ("ct.log_list.v3", "transparency", ["https://www.gstatic.com/ct/log_list/v3/log_list.json"]),
-    ("rpki.ripe.tal", "rpki", ["https://rpki.ripe.net/ta/2/tal", "https://rpki.ripe.net/ta/rpki-client.tal"]),
+    (
+        "rpki.ripe.tal",
+        "rpki",
+        ["https://rpki.ripe.net/ta/2/tal", "https://rpki.ripe.net/ta/rpki-client.tal"],
+    ),
     ("rpki.apnic.tal", "rpki", ["https://tal.rpki.apnic.net/apnic-tal/apnicTal.tal"]),
     ("rpki.afrinic.tal", "rpki", ["https://rpki.afrinic.net/tal/afrinic.tal"]),
     ("rpki.lacnic.tal", "rpki", ["https://repo.lacnic.net/rpki/lacnic.tal"]),
-    ("rpki.arin.tal", "rpki", ["https://www.arin.net/public/rpki/arin.tal.asc", "https://www.arin.net/resources/rpki/tal.asc"]),
+    (
+        "rpki.arin.tal",
+        "rpki",
+        [
+            "https://www.arin.net/public/rpki/arin.tal.asc",
+            "https://www.arin.net/resources/rpki/tal.asc",
+        ],
+    ),
 ]
 
 
@@ -125,8 +146,8 @@ def fetch(url: str, timeout: int) -> dict:
     """One GET. Returns the attempt record and never raises: a refused source is a result, not a crash."""
     started = time.time()
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(request, timeout=timeout, context=CTX) as response:
+        request = urllib.request.Request(url, headers={"User-Agent": UA})  # noqa: S310 - a SOURCES literal
+        with urllib.request.urlopen(request, timeout=timeout, context=CTX) as response:  # noqa: S310 - CTX verifies TLS
             body = response.read(MAX_BYTES + 1)
             truncated = len(body) > MAX_BYTES
             body = body[:MAX_BYTES]
@@ -141,10 +162,20 @@ def fetch(url: str, timeout: int) -> dict:
                 "elapsed_s": round(time.time() - started, 2),
             }
     except urllib.error.HTTPError as exc:
-        return {"url": url, "status": exc.code, "error": "HTTPError", "elapsed_s": round(time.time() - started, 2)}
-    except Exception as exc:  # noqa: BLE001 - DNS, TLS and timeout are facts about the source
-        return {"url": url, "status": None, "error": type(exc).__name__, "detail": str(exc)[:120],
-                "elapsed_s": round(time.time() - started, 2)}
+        return {
+            "url": url,
+            "status": exc.code,
+            "error": "HTTPError",
+            "elapsed_s": round(time.time() - started, 2),
+        }
+    except Exception as exc:  # DNS, TLS and timeout are facts about the source
+        return {
+            "url": url,
+            "status": None,
+            "error": type(exc).__name__,
+            "detail": str(exc)[:120],
+            "elapsed_s": round(time.time() - started, 2),
+        }
 
 
 def probe(source: tuple[str, str, list[str]], timeout: int, retries: int) -> dict:
@@ -165,7 +196,11 @@ def probe(source: tuple[str, str, list[str]], timeout: int, retries: int) -> dic
         "id": sid,
         "group": group,
         "available": won is not None,
-        **(stability if stability else {"stable": None, "second_sha256": None, "second_status": None}),
+        **(
+            stability
+            if stability
+            else {"stable": None, "second_sha256": None, "second_status": None}
+        ),
         "url": won["url"] if won else None,
         "status": won["status"] if won else None,
         "bytes": won["bytes"] if won else None,
@@ -190,9 +225,10 @@ def probe_stability(won: dict, timeout: int) -> dict:
     }
 
 
-
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Probe trust-anchor sources and write a catalog artifact")
+    ap = argparse.ArgumentParser(
+        description="Probe trust-anchor sources and write a catalog artifact"
+    )
     ap.add_argument("--data", default="/data", help="trustatlas data directory (default /data)")
     ap.add_argument("--timeout", type=int, default=25)
     ap.add_argument("--retries", type=int, default=2)
@@ -258,4 +294,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

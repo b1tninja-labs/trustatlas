@@ -781,7 +781,9 @@ def interpreter(version: str | None) -> list[str]:
     launcher = shutil.which("py")
     if launcher is None:
         pytest.skip("no `py` launcher on this host")
-    probe = subprocess.run([launcher, f"-{version}", "-c", "pass"], capture_output=True, timeout=60)
+    probe = subprocess.run(  # noqa: S603 - argv is a list; the launcher came from shutil.which
+        [launcher, f"-{version}", "-c", "pass"], capture_output=True, timeout=60
+    )
     if probe.returncode != 0:
         pytest.skip(f"`py -{version}` is not installed on this host")
     return [launcher, f"-{version}"]
@@ -811,7 +813,7 @@ def test_a_reader_flag_reaches_the_reader_only_when_joined_by_equals(
     ]
     artifact = tmp_path / "store" / "fixture.dash.json"
 
-    split = subprocess.run(
+    split = subprocess.run(  # noqa: S603 - argv is a list built from this test's own paths
         [*base, "--reader-arg", "-c", "--reader-arg", code],
         capture_output=True,
         text=True,
@@ -821,7 +823,7 @@ def test_a_reader_flag_reaches_the_reader_only_when_joined_by_equals(
     assert "--reader-arg" in split.stderr
     assert not artifact.exists()
 
-    joined = subprocess.run(
+    joined = subprocess.run(  # noqa: S603 - argv is a list built from this test's own paths
         [*base, "--reader-arg=-c", f"--reader-arg={code}"],
         capture_output=True,
         text=True,
@@ -835,7 +837,7 @@ def test_a_reader_flag_reaches_the_reader_only_when_joined_by_equals(
 
 def test_the_help_says_how_to_pass_a_reader_flag() -> None:
     """The form is documented where a caller looks for it, not only in the roadmap."""
-    done = subprocess.run(
+    done = subprocess.run(  # noqa: S603 - argv is a list: this interpreter and the script under test
         [sys.executable, str(SCRIPT), "--help"],
         capture_output=True,
         text=True,

@@ -82,23 +82,17 @@ ignore = [
   # refuses a bundle whose digests do not add up, which is a self-check and not test code. certledger turns
   # it off the same way; asn1core leaves it on and carries a written policy naming each line instead.
   "S101",
-  # S3xx flags reaching the network and running an external binary as if either were the bug. Both are this
-  # directory's entire job: `collect_bundle.py --url` fetches, `--reader keytool` asks a store's own reader to
-  # print its contents so no PKI format gets implemented here. The controls that matter are explicit and each
-  # is a named line in the source — `ssl.create_default_context()` on every fetch, argv passed as a list with
-  # `# noqa: S603` rather than through a shell, byte caps on what a response may be — so silencing the rule
-  # wholesale loses nothing that the code has already stated more precisely. certledger ignores the same
-  # pair for the same reason.
-  #
-  # These three are ignored rather than deleted from `select`, and the difference is what RUF100 enforces: a
-  # suppressed rule stays *known to the linter*, so the `# noqa: S310` / `S603` / `S607` markers that name each
-  # deliberate control stay load-bearing, and RUF100 fails if one is added where nothing was suppressed or left
-  # on a line whose control went away. Dropping `S` from `select` instead would make every one of those markers
-  # an unused directive — 23 of them across the nine tools — which is how a config edit silently turns the
-  # audit trail for "this fetch verifies TLS" into noise.
-  "S310",
-  "S603",
-  "S607",
+  # S310 (opening a URL), S603 (running a subprocess) and S607 (by a partial path) flag reaching the network
+  # and running an external binary as if either were the bug. Both are this directory's entire job:
+  # `collect_bundle.py --url` fetches, `--reader keytool` asks a store's own reader to print its contents so
+  # no PKI format gets implemented here. They are nevertheless left *enabled*, not listed here, because the
+  # controls that matter are explicit and each is a named line in the source — `ssl.create_default_context()`
+  # on every fetch, argv passed as a list with `# noqa: S603` rather than through a shell, byte caps on what a
+  # response may be — and a `# noqa` marker is only load-bearing while its rule is enabled. Ruff treats an
+  # ignored rule as non-enabled, so RUF100 reports every marker for it as unused: ignoring these three here
+  # once turned the whole audit trail for "this fetch verifies TLS" into dead directives. Enabled, a new
+  # fetch or subprocess fails the lint until someone writes the marker beside its control, and RUF100 fails
+  # on a marker left on a line whose call went away.
 ]
 
 [tool.ruff.lint.per-file-ignores]
