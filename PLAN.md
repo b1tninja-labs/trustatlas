@@ -424,6 +424,38 @@ ambiguity. Reading the store answers the same question **definitively and offlin
 cases a TLS probe cannot: code-signing anchors, intercepting proxies, and runtimes shipping their own bundle.
 That local audit is the most useful tool in this plan and the cheapest.
 
+## User story: one programmatic inventory of trust (owner, 2026-11-15)
+
+> As someone answering "who still trusts this CA, and who has dropped or revoked it?", I want a programmatic way to
+> enumerate every trust store on a machine and in the packages it runs — the operating system's, and every runtime,
+> language package and application that bundles its own roots — together with each store's anchors, the leaves
+> issued under them, where each list came from, and which stores still carry, no longer carry, or actively distrust
+> or revoke a given CA or leaf. Today that is anybody's guess, because the anchors are copied into many packages
+> besides the OS, so I need to enumerate, download and check them by command rather than by recollection.
+
+What each clause asks for, and what carries it today:
+
+| The story asks for | Carried by | State on 2026-11-15 |
+| --- | --- | --- |
+| Enumerate the stores on a host and in its packages | `ta.store_registry` (21 rows), `ta.inventory` | registry and per-store collectors exist; no single command runs them all into one inventory |
+| Stores bundled inside language packages and applications | `ta.bundled_packages`, `ta.readers_remaining` | named in the registry only where someone wrote a row; nothing discovers a vendored bundle |
+| Each store's anchors | `ta.collect_*`, `ta.readers_via_command` | measured for Windows, NSS, curl, certifi, Java, Node, Python, Android |
+| Where each list came from, checkably | `ta.provenance_fields`, `ta.verify_provenance` | every artifact carries provenance; re-derivation checked for curl and Android only |
+| Which stores still carry a given CA or key | `ta.anchor_report` (on `ta.join_programs`) | pairwise joins exist; no per-key report across every store |
+| Which stores no longer carry it | `ta.collect_bundle` (`membership_change`), `ta.anchor_report` | added/removed recorded per run for bundles; no history across runs or across package versions |
+| Which stores **distrust or revoke** it | `ta.distrust_lists`, `ta.constraints` | the Windows `Disallowed` store is read locally and `disallowedcertstl.cab` is fetched but undecoded; NSS distrust-after, Mozilla OneCRL and Chrome CRLSets are not read at all |
+| The leaves issued under an anchor | `ta.leaves_of_anchor`, `ta.consume_index`, `ta.host_reach` | presented chains are joined by key (`host_reach.py`); issuance comes only through `certledger`'s coverage index, which is empty today |
+| Whether a leaf is revoked | `ta.leaf_revocation` | not started; checking a CRL or OCSP answer is protocol logic that belongs to `revokekit`, not here |
+| A programmatic interface | `ta.query_cli`; decision 4 below | the artifacts are JSON with provenance, but there is no query command, and `ta.package` is a deliberate `[no]` |
+
+Two limits bind this story and are not relaxed by it. A store absent from the inventory is **unread**, never
+"does not trust", and the report states which stores were examined (design goal 6). And "every leaf" is not
+reachable (non-goals): leaves come from presented chains and from CT, each with its coverage stated.
+
+Distrust and revocation sources are listed here as names to probe, not as measured facts. Their formats and
+endpoints are unverified (see Unverified): `tools/probe_sources.py` records them first, and decoding any of them is
+an obligation for the project that owns that format, never a parser grown in `tools/`.
+
 ## Design goals
 
 1. **Every rendered claim names its evidence** — a fixture and a test, or a provenance record naming the command
@@ -722,6 +754,14 @@ reference can still be followed.
    passes the rule. Still open beneath it: the off-PyPI brand check, which has to happen before publication
    rather than after.
 
+4. **The programmatic interface for the inventory user story.** Either a command over committed artifacts — stdlib
+   scripts in `tools/` that print or write JSON against a published schema, which fits `AGENTS.md` as it stands —
+   or an importable library, which needs `ta.package` lifted from `[no]` and `pyproject.toml`'s refusal reversed.
+   The rows `ta.query_cli` and `ta.anchor_report` assume the first until this is decided.
+5. **Who owns decoding distrust lists.** Chrome CRLSets, Mozilla OneCRL and the Windows `disallowedcertstl.cab`
+   each need a decoder, and trustatlas may not write one. `pkix` M7 already owns the CTL; CRLSets and OneCRL have no
+   owning project yet (`revokekit` is the natural candidate).
+
 ## Unverified — check before repeating any of this
 
 - The six 404 rows. They are my wrong guesses, not evidence that the sources do not exist.
@@ -730,6 +770,9 @@ reference can still be followed.
 - Whether the eight compromised SPKI hashes reach every store by the same path. The AAA cross-sign is confirmed;
   per-store reach is what the tool has to compute.
 - Non-Windows local stores. The macOS and Linux read paths were not exercised from this machine.
+- The distrust and revocation sources named in the user story: Chrome CRLSets, Mozilla OneCRL, NSS distrust-after
+  fields in `certdata.txt`, Apple's own revocation service. Their endpoints, formats, signing and update cadence are
+  recalled, not measured; none has been probed from this machine.
 - Brand collisions off PyPI. `names.py` checks package indexes; it does not check whether the same name already
   exists on the web. Check before publishing anything.
 
