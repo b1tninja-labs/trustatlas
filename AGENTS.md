@@ -1,9 +1,14 @@
 # Instructions for coding agents
 
-**Fetchers only. No package, no `package.json`, no PyPI distribution, no protocol logic, no renderer.** This
-directory graduated from plan-only on 2026-11-05, and narrowly: `tools/` may hold stdlib-only scripts that write
-artifacts to the data directory. The web app is still unbuilt and `PLAN.md`'s gating rule still binds it. Do not
-scaffold the thing you are about to design.
+**Fetchers, and an importable library that reads what they wrote. No `package.json`, no PyPI distribution yet, no
+protocol logic, no renderer.** This directory graduated from plan-only on 2026-11-05, and narrowly: `tools/` may
+hold stdlib-only scripts that write artifacts to the data directory. **On 2026-11-15 the owner decided that the
+inventory user story (`PLAN.md`) is served by an importable library, not only a command** (`PLAN.md` decision 4,
+row `ta.package`). That library is stdlib-only, reads committed artifacts, and joins them; it parses no certificate
+and fetches nothing at query time. Until the commit that builds it lands, `pyproject.toml` keeps no build backend and
+`tests/test_pyproject.py` keeps pinning that, so the refusal and the decision change together. Publishing to PyPI
+waits on the brand check and on `cl.aup-review`. The web app is still unbuilt and `PLAN.md`'s gating rule still binds
+it. Do not scaffold the thing you are about to design.
 
 ## Read in this order
 

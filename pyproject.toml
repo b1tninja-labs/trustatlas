@@ -1,9 +1,10 @@
 # This is a toolchain configuration, not a distribution: `[project]` below declares `dependencies = []`
 # and there is deliberately **no `[build-system]` table**. That omission is the whole point — without a
-# build backend nothing here can be built or installed, so `ta.package`, the `[no]` row in `ROADMAP.md` §4,
-# is refused by the file rather than only promised by it. A sibling like `asn1core` carries a
+# build backend nothing here can be built or installed until `ta.package` (now an open row in `ROADMAP.md` §1b)
+# is built. A sibling like `asn1core` carries a
 # `[build-system]` because it ships a wheel; this directory ships scripts and artifacts. If that ever
-# changes it is a decision to record in `AGENTS.md` first, not an edit to make here.
+# changes it is a decision to record in `AGENTS.md` first, not an edit to make here. Recorded 2026-11-15: the
+# owner chose an importable library (row `ta.package`), and the build backend lands with it, not before.
 
 [project]
 name = "trustatlas"

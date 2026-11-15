@@ -2,8 +2,9 @@
 
 `pyproject.toml` says this directory ships no package and no runtime dependency. Both are refusals, and a
 refusal nobody re-checks is a default that quietly changes: one added `dependencies` entry or one
-`[build-system]` table turns the fetchers into a distribution, which `ROADMAP.md` §4 marks `[no]`. These
-tests fail on that edit rather than leaving it to a reader of prose.
+`[build-system]` table turns the fetchers into a distribution. The owner decided on 2026-11-15 that one will exist
+(`ROADMAP.md` row `ta.package`, an importable library); until the commit that builds it, these pins hold, and that
+commit changes them in the same change. They fail on any other such edit rather than leaving it to prose.
 
 It also gives item 2 onward somewhere to land: `testpaths` needs the directory to exist, or pytest warns and
 falls back to searching the whole tree from the current directory.

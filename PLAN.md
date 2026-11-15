@@ -446,7 +446,7 @@ What each clause asks for, and what carries it today:
 | Which stores **distrust or revoke** it | `ta.distrust_lists`, `ta.constraints` | the Windows `Disallowed` store is read locally and `disallowedcertstl.cab` is fetched but undecoded; NSS distrust-after, Mozilla OneCRL and Chrome CRLSets are not read at all |
 | The leaves issued under an anchor | `ta.leaves_of_anchor`, `ta.consume_index`, `ta.host_reach` | presented chains are joined by key (`host_reach.py`); issuance comes only through `certledger`'s coverage index, which is empty today |
 | Whether a leaf is revoked | `ta.leaf_revocation` | not started; checking a CRL or OCSP answer is protocol logic that belongs to `revokekit`, not here |
-| A programmatic interface | `ta.query_cli`; decision 4 below | the artifacts are JSON with provenance, but there is no query command, and `ta.package` is a deliberate `[no]` |
+| A programmatic interface | `ta.package` (an importable library, decided 2026-11-15), `ta.query_cli` over it; decision 4 below | the artifacts are JSON with provenance; the library is designed in its row and not yet built |
 
 Two limits bind this story and are not relaxed by it. A store absent from the inventory is **unread**, never
 "does not trust", and the report states which stores were examined (design goal 6). And "every leaf" is not
@@ -754,10 +754,13 @@ reference can still be followed.
    passes the rule. Still open beneath it: the off-PyPI brand check, which has to happen before publication
    rather than after.
 
-4. **The programmatic interface for the inventory user story.** Either a command over committed artifacts — stdlib
-   scripts in `tools/` that print or write JSON against a published schema, which fits `AGENTS.md` as it stands —
-   or an importable library, which needs `ta.package` lifted from `[no]` and `pyproject.toml`'s refusal reversed.
-   The rows `ta.query_cli` and `ta.anchor_report` assume the first until this is decided.
+4. **The programmatic interface for the inventory user story** — **decided 2026-11-15: an importable library.**
+   `ta.package` moves from `[no]` to an open row: a stdlib-only `trustatlas` package that reads committed artifacts
+   and joins them, with every answer carrying the artifacts and `retrieved_at` behind it, and `ta.query_cli` becomes
+   a thin command over that API. The non-goals below still bind it: it parses, validates and checks revocation
+   through `asn1core`, `pkix` and `revokekit`, and fetches nothing at query time. `pyproject.toml` gains its build
+   backend in the commit that builds the package, and PyPI publication still waits on decision 3's brand check and
+   on `cl.aup-review`.
 5. **Who owns decoding distrust lists.** Chrome CRLSets, Mozilla OneCRL and the Windows `disallowedcertstl.cab`
    each need a decoder, and trustatlas may not write one. `pkix` M7 already owns the CTL; CRLSets and OneCRL have no
    owning project yet (`revokekit` is the natural candidate).
