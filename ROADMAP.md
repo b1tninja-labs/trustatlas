@@ -12,8 +12,12 @@ into marketing.
 row `ta.collect_certdata`), and `ruff check tools tests`,
 `ruff format --check tools tests` and `mypy` are all clean (row `ta.suite_green`). `.probe_spki/` is the one
 untracked path left (owner decision 1).
-**No row reads `[ok]`**: rows whose named test now passes read `[part]` until `projecthub`'s evidence check has run
-against a commit, because a passing test is not yet proof that it would fail on regression. `tests/test_roadmap_rows.py`
+**Three rows read `[ok]`** (2026-11-15): `ta.host_chain_in`, `ta.pem_armour` and `ta.bundle_dump_guard`, each passed by
+`projecthub`'s evidence check (submissions 95–97), whose L4 step mutates the function the row names and requires the
+named test to kill a mutant. `ta.join_programs` passed the same check (submission 36) and stays `[part]` because its
+key-level join is not wired. Every other row reads `[part]` or `[ ]`: a passing test is not yet proof that it would fail
+on regression. `ta.host_reach`, its twin and hostile rows, and `ta.reader_arg_form` were measured and fail L4 (their
+tests run the tool as a subprocess and kill no mutant of `join`; `main` has no refusal to mutate). `tests/test_roadmap_rows.py`
 (row `ta.roadmap_gate`) now checks that every `[ok]` row's test exists, that every `Test:` id not marked
 `(to be written)` exists, and that a marked one does not.
 
@@ -121,8 +125,8 @@ names the test that would let the row move past `[part]`, and `tests/test_roadma
 while the marker remains. On 2026-11-14 thirteen test files exist, 111 passing and one strict xfail.
 `projecthub leases acquire` refused every trustatlas row earlier that day with `project not Active`; after projecthub
 `bbd4127` and the registry's reclassification to Tooling, a lease activates the project, and the rows worked later
-that day were each done under a lease and submitted for the evidence check. No row reads `[ok]` until that check
-passes it.
+that day were each done under a lease and submitted for the evidence check. A row reads `[ok]` only once that check
+passes it; three do as of 2026-11-15.
 
 ## 6. Open questions
 
