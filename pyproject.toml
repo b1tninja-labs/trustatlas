@@ -1,21 +1,23 @@
-# This is a toolchain configuration, not a distribution: `[project]` below declares `dependencies = []`
-# and there is deliberately **no `[build-system]` table**. That omission is the whole point — without a
-# build backend nothing here can be built or installed until `ta.package` (now an open row in `ROADMAP.md` §1b)
-# is built. A sibling like `asn1core` carries a
-# `[build-system]` because it ships a wheel; this directory ships scripts and artifacts. If that ever
-# changes it is a decision to record in `AGENTS.md` first, not an edit to make here. Recorded 2026-11-15: the
-# owner chose an importable library (row `ta.package`), and the build backend lands with it, not before.
+# Two things live here: stdlib-only collector scripts in `tools/`, which write artifacts and are not installed,
+# and the importable `trustatlas` library in `src/`, which reads those artifacts and joins them (row `ta.package`,
+# the owner's decision of 2026-11-15, recorded in `AGENTS.md` first as this file used to require). The build
+# backend below exists for the library alone: the wheel carries `src/trustatlas` and nothing from `tools/`.
+# Publishing it to PyPI still waits on the off-PyPI brand check and on `cl.aup-review`.
+
+[build-system]
+requires = ["hatchling>1.25"]
+build-backend = "hatchling.build"
 
 [project]
 name = "trustatlas"
 version = "0"
-description = "Fetchers and provenance validators for the trust-anchor supply chain: which store contains which root, how its bytes arrived, and where two programs disagree"
+description = "Which trust store lists which certificate or key, how each answer is known, and where programs disagree: collectors plus a library that reads their artifacts"
 readme = "PLAN.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 authors = [{ name = "Justin Capella" }]
-# Empty, and that emptiness is the design goal rather than an accident. `AGENTS.md` allows this directory
-# stdlib-only scripts, and `ROADMAP.md` §4 says why: parsing anchors is `asn1core`, path and issuer links
+# Empty, and that emptiness is the design goal rather than an accident, for the library as much as the scripts.
+# `ROADMAP.md` §4 says why: parsing anchors is `asn1core`, path and issuer links
 # are `pkix`, CT is `ctspy`, storage and coverage states are `certledger`. A runtime dependency here would
 # be the first step toward growing a second, laxer PKI in the pipeline — the one thing a trust map cannot
 # survive. So no `certifi` (the collectors take `--url` instead), no `cryptography`, nothing. The image is
@@ -31,23 +33,22 @@ dependencies = []
 # is not repeated here.
 dev = ["ruff==0.15.12", "mypy==1.20.2", "pytest==9.0.3", "coverage==7.17.0"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/trustatlas"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# `tools` and not `.`: there is no package to import here, only scripts, and the tests item 2 onward add
-# import them by module name (`import collect_bundle`). Putting `.` on the path instead would make pytest
-# prepend the repository root for every test file it collects under a rootdir-relative scheme and invite a
-# future `tools/` module to shadow something real. Scripts stay scripts — nothing in this workspace imports
-# `trustatlas`, and the absence of that name from `sys.modules` is what keeps a stray top-level module in a
-# sibling checkout from being picked up as ours.
-pythonpath = ["tools"]
+# `tools` and `src`, never `.`: the scripts are imported by module name (`import collect_bundle`) and the library
+# from its src layout (`import trustatlas`). Putting `.` on the path instead would make pytest prepend the
+# repository root for every test file and invite a stray top-level module to shadow something real; the src
+# layout is what lets the library be imported in tests without that.
+pythonpath = ["tools", "src"]
 addopts = "-ra"
 
 [tool.coverage.run]
 branch = true
-# `source = ["tools"]`, not a package: the code under test is nine scripts and there is no importable
-# distribution to name. This is also why the floor below can be honest — it measures the fetchers, which are
-# the only thing here that could regress.
-source = ["tools"]
+# The scripts and the library are both measured: either can regress, and the floor below binds both.
+source = ["tools", "src"]
 
 [tool.coverage.report]
 # 85, and set before the tests that have to earn it exist. The convention elsewhere in this workspace is a
@@ -114,4 +115,4 @@ ignore_missing_imports = true
 # `tools` and not a package, matching the pytest path above. Item 16 runs `mypy tools tests`; both are listed
 # so a bare `python -m mypy` in the directory checks the same thing that gate does rather than staying silent
 # about the suite, where "Success" would otherwise mean something narrower than it reads as.
-files = ["tools", "tests"]
+files = ["tools", "src", "tests"]
