@@ -1,10 +1,12 @@
 services:
   probe:
-    build: .
+    build:
+      context: .
+      target: probe
     image: trustatlas-probe:local
     volumes:
       # Host data directory -> /data inside the container. Override with TRUSTATLAS_DATA=<path>.
-      - ${TRUSTATLAS_DATA:-M:/trustatlas}:/data
+      - ${TRUSTATLAS_DATA:-D:/data/trustatlas}:/data
     environment:
       TZ: UTC
     # One-shot by design: `docker compose run --rm probe`. A schedule belongs to a later service that has code
@@ -15,9 +17,12 @@ services:
   # collect_store.py is host-resident and refuses to run off Windows, because the realized store of one
   # machine only exists on that machine. A Fargate task can state what each program publishes; it can
   # never state what a laptop's root store contains, and silence about that artifact must not be read
-  # as an absence of the fact.
+  # as an absence of the fact. `--via sandbox` is host-resident too: it boots Windows Sandbox on this
+  # desktop and writes windows.sandbox.json, a fresh image of this build, not the realized store.
   collect:
-    build: .
+    build:
+      context: .
+      target: probe
     image: trustatlas-probe:local
     entrypoint: ["sh", "-c"]
     command:
@@ -28,6 +33,24 @@ services:
         /data/store/nss-x-curl.json &&
         python tools/collect_ctl.py --data /data --refresh
     volumes:
-      - ${TRUSTATLAS_DATA:-M:/trustatlas}:/data
+      - ${TRUSTATLAS_DATA:-D:/data/trustatlas}:/data
     environment:
       TZ: UTC
+
+  # Read-only view of the harvest tree. `docker compose up explore` serves http://127.0.0.1:8090/
+  # Host port 8090: 8080 is already taken on this machine by another local server.
+  # CERTLEDGER_DATA is the host path (default D:/data/certledger). It is not copied into the image.
+  # probe and collect stay on TRUSTATLAS_DATA and are not pointed at this tree.
+  explore:
+    build:
+      context: .
+      target: explore
+    image: trustatlas-explore:local
+    ports:
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - ${CERTLEDGER_DATA:-D:/data/certledger}:/data:ro
+    environment:
+      TZ: UTC
+      CERTLEDGER_DATA: /data
+      TRUSTATLAS_DATA: /data

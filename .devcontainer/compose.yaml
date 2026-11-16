@@ -1,0 +1,30 @@
+# Merged over the repository compose file by the devcontainer. Collectors stay behind the
+# `collect` profile so opening the container does not fetch, and the site is started by hand
+# (`python tools/explore.py --data /data --bind 0.0.0.0:8080`) against the mounted tree.
+# The host port is 8090.
+services:
+  probe:
+    profiles: ["collect"]
+  collect:
+    profiles: ["collect"]
+  explore:
+    profiles: ["explore"]
+  dev:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: explore
+    image: trustatlas-explore:local
+    entrypoint: ["sleep", "infinity"]
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - ${CERTLEDGER_DATA:-D:/data/certledger}:/data:ro
+    environment:
+      TZ: UTC
+      CERTLEDGER_DATA: /data
+      TRUSTATLAS_DATA: /data
+      PYTHONPATH: /app/src
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "127.0.0.1:8090:8080"

@@ -1,0 +1,8 @@
+{
+  "name": "trustatlas",
+  "dockerComposeFile": ["../compose.yaml", "compose.yaml"],
+  "service": "dev",
+  "workspaceFolder": "/app",
+  "forwardPorts": [8090],
+  "shutdownAction": "stopCompose"
+}
