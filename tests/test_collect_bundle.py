@@ -1068,3 +1068,146 @@ def test_a_program_with_no_default_path_is_a_refusal_and_not_an_empty_bundle(
 
     assert collect_bundle.bundle_path("gnu.tls", None) is None
     assert not (tmp_path / "store").exists()
+
+
+# --- the indexed bytes are retained under raw/ ----------------------------------------------------
+
+
+def retained_digest_set(path: Path, program: str) -> set[str]:
+    """Re-index a retained copy from scratch, the way `check_spki_artifact.py` will meet it."""
+    seen, _ = collect_bundle.index_pem(
+        path.read_text(encoding="utf-8", errors="replace"), program=program
+    )
+    return set(seen)
+
+
+def test_path_mode_retains_the_bundle_it_indexed_with_its_digest(tmp_path: Path) -> None:
+    """`--path` leaves raw/<program>.pem, byte-identical to the file it read, named in provenance.
+
+    CRLF line endings are used on purpose: `read_text` folds them, so a copy written from the decoded text
+    would hash differently from the source, and `file_sha256` would stop naming the file it names today.
+    """
+    source = tmp_path / "src" / "bundle.pem"
+    source.parent.mkdir()
+    source.write_bytes(
+        bundle("# Subject: CN=Kept A\n", "# Subject: CN=Kept B\n").replace("\n", "\r\n").encode()
+    )
+    data = tmp_path / "data"
+    assert run_main("--data", str(data), "--program", "fixture.kept", "--path", str(source)) == 0
+
+    raw = data / "raw" / "fixture.kept.pem"
+    assert raw.read_bytes() == source.read_bytes()
+    assert not raw.with_name(raw.name + ".partial").exists()
+    doc = json.loads((data / "store" / "fixture.kept.json").read_text("utf-8"))
+    provenance = doc["provenance"]
+    assert provenance["path"] == str(source)
+    assert provenance["cached_at"] == str(raw)
+    assert provenance["file_sha256"] == hashlib.sha256(raw.read_bytes()).hexdigest()
+    assert retained_digest_set(raw, "fixture.kept") == {r["sha256"] for r in doc["certificates"]}
+    assert retained_digest_set(raw, "fixture.kept") == {digest_of(b"A"), digest_of(b"B")}
+
+
+def test_reader_mode_retains_stdout_exactly_and_it_reindexes_to_the_artifact(
+    tmp_path: Path,
+) -> None:
+    """`--reader` leaves the reader's stdout as raw/<program>.pem, so `python.schannel` can be re-read.
+
+    The reader here is the registry row's shape: this interpreter with `--reader-arg=-c` and code that
+    prints `# Subject:` lines and PEM. The retained digest equals `pem_sha256`, because both are the hash of
+    the one text that was indexed.
+    """
+    text = bundle("# Subject: CN=Reader Kept A\n", "# Subject: CN=Reader Kept B\n")
+    code = f"import sys; sys.stdout.write({text!r})"
+    assert (
+        run_main(
+            "--data",
+            str(tmp_path),
+            "--program",
+            "fixture.readkept",
+            "--reader",
+            sys.executable,
+            "--reader-arg=-c",
+            f"--reader-arg={code}",
+        )
+        == 0
+    )
+
+    raw = tmp_path / "raw" / "fixture.readkept.pem"
+    assert raw.read_bytes() == text.encode("utf-8")
+    doc = json.loads((tmp_path / "store" / "fixture.readkept.json").read_text("utf-8"))
+    provenance = doc["provenance"]
+    assert provenance["reader"] == [sys.executable, "-c", code]
+    assert provenance["cached_at"] == str(raw)
+    assert provenance["file_sha256"] == provenance["pem_sha256"]
+    assert provenance["file_sha256"] == hashlib.sha256(raw.read_bytes()).hexdigest()
+    digests = {r["sha256"] for r in doc["certificates"]}
+    assert digests == {digest_of(b"A"), digest_of(b"B")}
+    assert retained_digest_set(raw, "fixture.readkept") == digests
+    assert doc["counts"]["subject_named"] == 2
+
+
+def test_a_retained_copy_that_does_not_reindex_refuses_the_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the copy under raw/ would not reproduce the digest set, neither it nor the artifact is written."""
+    source = tmp_path / "bundle.pem"
+    source.write_text(bundle("# Subject: CN=Refused\n"), encoding="utf-8")
+    monkeypatch.setattr(collect_bundle, "retained_digests", lambda *_a, **_k: set())
+    argv = (
+        "--data",
+        str(tmp_path / "data"),
+        "--program",
+        "fixture.mismatch",
+        "--path",
+        str(source),
+    )
+    assert run_main(*argv) == 1
+
+    assert not (tmp_path / "data" / "store").exists()
+    assert list((tmp_path / "data" / "raw").iterdir()) == []
+
+
+def test_the_reindex_check_uses_the_indexer_it_checks(tmp_path: Path) -> None:
+    """`retained_digests` agrees with `index_pem` for a plain file and for an archive."""
+    plain = tmp_path / "plain.pem"
+    plain.write_bytes(blocks((b"A", ""), (b"B", "")).replace("\n", "\r\n").encode())
+    assert collect_bundle.retained_digests(plain, program="p", name_key="subject") == {
+        digest_of(b"A"),
+        digest_of(b"B"),
+    }
+    archive = tmp_path / "files.tar.gz"
+    archive.write_bytes(tar_payload({"a.0": aosp_member(b"C", "CN=C")}))
+    assert collect_bundle.retained_digests(archive, program="p", name_key="alias", tar=True) == {
+        digest_of(b"C")
+    }
+
+
+class _Response:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def read(self, limit: int) -> bytes:
+        return self.payload[:limit]
+
+
+def test_url_mode_is_unchanged_by_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--url` keeps writing raw/<program>.pem itself, with the same provenance keys as before."""
+    payload = bundle("# Subject: CN=Fetched\n").encode("utf-8")
+    monkeypatch.setattr(
+        collect_bundle.urllib.request, "urlopen", lambda *_a, **_k: _Response(payload)
+    )
+    url = "https://example.invalid/cacert.pem"
+    assert run_main("--data", str(tmp_path), "--program", "fixture.url", "--url", url) == 0
+
+    raw = tmp_path / "raw" / "fixture.url.pem"
+    assert raw.read_bytes() == payload
+    assert sorted(p.name for p in (tmp_path / "raw").iterdir()) == ["fixture.url.pem"]
+    doc = json.loads((tmp_path / "store" / "fixture.url.json").read_text("utf-8"))
+    provenance = doc["provenance"]
+    assert set(provenance) == {"url", "cached_at", "file_sha256", "method", "note"}
+    assert provenance["url"] == url
+    assert provenance["cached_at"] == str(raw)
+    assert provenance["file_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert [r["sha256"] for r in doc["certificates"]] == [digest_of(b"A")]

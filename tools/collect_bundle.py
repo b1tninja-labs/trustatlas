@@ -276,6 +276,25 @@ def pem_from_tar(payload: bytes) -> tuple[str, int, int]:
     return "\n".join(text), members, dumped
 
 
+def retained_digests(path: Path, *, program: str, name_key: str, tar: bool = False) -> set[str]:
+    """The certificate digest set that the retained file at `path` indexes to, read the way it was read.
+
+    The retained copy under `raw/` is what `check_spki_artifact.py` derives SPKI digests from, so it must be
+    the very text this run hashed and not merely the same source. Re-indexing it here, with the same reader
+    (`pem_from_tar` for an archive, UTF-8 with replacement otherwise) and the same `index_pem`, is the check
+    that the copy and the artifact describe one trust set.
+    """
+    payload = path.read_bytes()
+    if tar:
+        text = pem_from_tar(payload)[0]
+    else:
+        # Decoded exactly as `Path.read_text` decodes a `--path` file (UTF-8 with replacement, universal
+        # newlines), so a retained CRLF file re-indexes the way its source was indexed.
+        text = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8", errors="replace").read()
+    seen, _ = index_pem(text, program=program, name_key=name_key)
+    return set(seen)
+
+
 def membership_change(previous: Path, program: str, current: Iterable[str]) -> dict[str, object]:
     """What changed in `program`'s membership since the artifact at `previous`, by SHA-256 of DER.
 
@@ -384,10 +403,13 @@ def main() -> int:
             )
             return 1
         text = done.stdout
+        # The reader's stdout is retained exactly as it was indexed, so the PEM a reader printed once can be
+        # read again without re-running the reader on a host whose store may have moved since.
+        retain = text.encode("utf-8", "replace")
         origin: dict[str, object] = {
             "reader": argv,
             "reader_stderr": (done.stderr or "").strip()[:400],
-            "pem_sha256": hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(),
+            "pem_sha256": hashlib.sha256(retain).hexdigest(),
             "method": (
                 f"asked the store's own reader ({argv[0]}) for PEM on stdout, then "
                 "collect_bundle.index_pem: split CERTIFICATE blocks, base64-decode, SHA-256 the DER"
@@ -430,14 +452,48 @@ def main() -> int:
         if local is None or not local.is_file():
             print(f"no bundle at {local}", file=sys.stderr)
             return 1
+        retain = local.read_bytes()
         text = local.read_text(encoding="utf-8", errors="replace")
         origin = {
             "path": str(local),
-            "file_sha256": hashlib.sha256(local.read_bytes()).hexdigest(),
+            "file_sha256": hashlib.sha256(retain).hexdigest(),
             "method": "split PEM CERTIFICATE blocks, base64-decode, SHA-256 the DER",
         }
 
     seen, counts = index_pem(text, program=args.program, name_key=args.reader_name_key)
+
+    # Every mode leaves the bytes it indexed under raw/, named as --url names them, so a later reader (the
+    # SPKI check) works from what was hashed. --path and --reader write beside the final name and move into
+    # place only once the copy re-indexes to this run's digest set; a copy that does not is refused along
+    # with the artifact, rather than left to describe a trust set the artifact does not hold.
+    if args.url:
+        retained = Path(str(origin["cached_at"]))
+        staged = None
+    else:
+        retained = Path(args.data) / "raw" / f"{args.program}.pem"
+        retained.parent.mkdir(parents=True, exist_ok=True)
+        staged = retained.with_name(retained.name + ".partial")
+        staged.write_bytes(retain)
+        origin["cached_at"] = str(retained)
+        origin["file_sha256"] = hashlib.sha256(staged.read_bytes()).hexdigest()
+    again = retained_digests(
+        staged or retained,
+        program=args.program,
+        name_key=args.reader_name_key,
+        tar=bool(args.url and args.tar),
+    )
+    if again != set(seen):
+        if staged is not None:
+            staged.unlink()
+        print(
+            f"retained copy {retained} re-indexes to {len(again)} digests, not this run's "
+            f"{len(seen)} ({len(again ^ set(seen))} differ); no artifact was written",
+            file=sys.stderr,
+        )
+        return 1
+    if staged is not None:
+        os.replace(staged, retained)
+
     out = Path(args.data) / "store" / f"{args.program}.json"
     change = membership_change(out, args.program, seen)
 
