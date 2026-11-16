@@ -11,6 +11,8 @@ Hermetic: PowerShell is never started, the placement check is answered by the te
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import subprocess
 import sys
@@ -136,6 +138,8 @@ def test_store_counts_rederive_from_the_artifact(
     assert doc["provenance"]["certificates_written"] is False
     assert all("der_octets" not in a for a in doc["anchors"])
     assert not (tmp_path / "store" / "der").exists()
+    assert not (tmp_path / "raw").exists()
+    assert "raw" not in doc["provenance"]
 
 
 def test_a_non_windows_host_exits_3_and_writes_nothing(
@@ -146,6 +150,157 @@ def test_a_non_windows_host_exits_3_and_writes_nothing(
     assert fake.calls == []
     assert not (tmp_path / "store").exists()
     assert "host-resident probe" in capsys.readouterr().err
+
+
+def der_for(marker: str) -> bytes:
+    """Stand-in certificate bytes. The tool decodes no certificate, so any bytes exercise retention."""
+    return b"\x30\x82\x01\x00" + marker.encode("ascii") * 16
+
+
+def with_der(store: str, marker: str, subject: str) -> dict[str, Any]:
+    """A provider row carrying DER, its stated digest the SHA-256 of those bytes, as Windows computes it."""
+    der = der_for(marker)
+    entry = row(
+        store, hashlib.sha256(der).hexdigest(), subject, [SERVER_AUTH, "Server Authentication"]
+    )
+    entry["der_base64"] = base64.b64encode(der).decode("ascii")
+    return entry
+
+
+# Root holds A and B, AuthRoot holds B again and C: 4 anchors, 3 distinct certificates.
+DER_ROWS = [
+    with_der("Root", "A", "CN=A"),
+    with_der("Root", "B", "CN=B"),
+    with_der("AuthRoot", "B", "CN=B"),
+    with_der("AuthRoot", "C", "CN=C"),
+]
+
+
+def run_with_der(
+    monkeypatch: pytest.MonkeyPatch, data: Path, rows: list[dict[str, Any]]
+) -> tuple[int, FakeProvider]:
+    fake = FakeProvider(rows)
+    monkeypatch.setattr(collect_store.subprocess, "run", fake)
+    monkeypatch.setattr(collect_store, "on_windows", lambda: True)
+    monkeypatch.setattr(sys, "argv", ["collect_store.py", "--data", str(data), "--with-der"])
+    return collect_store.main(), fake
+
+
+def raw_files(data: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in (data / "raw" / "windows.machine").iterdir()}
+
+
+def test_with_der_retains_one_verified_file_per_distinct_certificate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    code, fake = run_with_der(monkeypatch, tmp_path, DER_ROWS)
+    assert code == 0
+    assert fake.calls[0]["env"]["TA_WITH_DER"] == "1"
+
+    files = raw_files(tmp_path)
+    expected = {hashlib.sha256(der_for(m)).hexdigest() + ".der": der_for(m) for m in "ABC"}
+    # One file per distinct certificate, the bytes exactly as the provider returned them...
+    assert files == expected
+    # ...and each file's SHA-256 is its name.
+    for name, der in files.items():
+        assert hashlib.sha256(der).hexdigest() + ".der" == name
+    # The old location under store/ is gone: the artifact directory holds artifacts only.
+    assert sorted(p.name for p in (tmp_path / "store").iterdir()) == ["windows.machine.json"]
+
+    doc = json.loads((tmp_path / "store" / "windows.machine.json").read_text(encoding="utf-8"))
+    assert doc["provenance"]["raw"] == {"dir": "raw/windows.machine", "files": 3, "refused": 0}
+    assert doc["provenance"]["certificates_written"] is True
+    assert doc["counts"] == rederive(doc)
+    assert doc["counts"]["anchors"] == 4
+    assert doc["counts"]["distinct_certificates"] == 3
+    assert all(a["der_octets"] == len(der_for(a["subject"][3:])) for a in doc["anchors"])
+
+
+def test_retention_changes_no_count_or_anchor_field(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Against a run without --with-der over the same store: only the --with-der fields differ."""
+    run_with_der(monkeypatch, tmp_path / "with", DER_ROWS)
+    plain = [{**r, "der_base64": None} for r in DER_ROWS]
+    fake = FakeProvider(plain)
+    monkeypatch.setattr(collect_store.subprocess, "run", fake)
+    monkeypatch.setattr(sys, "argv", ["collect_store.py", "--data", str(tmp_path / "without")])
+    assert collect_store.main() == 0
+
+    def load(side: str) -> dict[str, Any]:
+        path = tmp_path / side / "store" / "windows.machine.json"
+        return dict(json.loads(path.read_text(encoding="utf-8")))
+
+    with_doc, without_doc = load("with"), load("without")
+    assert with_doc["counts"] == without_doc["counts"]
+    strip = [{k: v for k, v in a.items() if k != "der_octets"} for a in with_doc["anchors"]]
+    assert strip == without_doc["anchors"]
+    for doc in (with_doc, without_doc):
+        doc.pop("retrieved_at")
+        doc.pop("anchors")
+        doc["provenance"].pop("certificates_written")
+        doc["provenance"].pop("raw", None)
+    assert with_doc == without_doc
+    assert not (tmp_path / "without" / "raw").exists()
+
+
+def test_a_certificate_whose_bytes_do_not_match_its_digest_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    liar = with_der("Root", "D", "CN=D")
+    stated = hashlib.sha256(der_for("E")).hexdigest()
+    liar["sha256"] = stated.upper()
+    code, _ = run_with_der(monkeypatch, tmp_path, [*DER_ROWS, liar])
+    # The artifact is written, but the run does not exit green with a certificate missing from raw/.
+    assert code == 4
+    files = raw_files(tmp_path)
+    assert f"{stated}.der" not in files
+    assert hashlib.sha256(der_for("D")).hexdigest() + ".der" not in files
+    assert len(files) == 3
+    doc = json.loads((tmp_path / "store" / "windows.machine.json").read_text(encoding="utf-8"))
+    assert doc["provenance"]["raw"] == {"dir": "raw/windows.machine", "files": 3, "refused": 1}
+    # The anchor itself is still recorded: refusing the bytes is not deleting the provider's statement.
+    assert doc["counts"]["anchors"] == 5
+    assert f"refused Root {stated}" in capsys.readouterr().err
+
+
+def test_a_stated_digest_that_is_not_a_sha256_never_becomes_a_path(tmp_path: Path) -> None:
+    bad = with_der("Root", "A", "CN=A")
+    bad["sha256"] = "../../escape"
+    result = collect_store.retain_der([bad], tmp_path / "raw" / "x")
+    assert result["files"] == 0
+    assert len(result["refused"]) == 1
+    assert list((tmp_path / "raw" / "x").iterdir()) == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["raw"]
+
+
+def test_rerunning_into_the_same_directory_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert run_with_der(monkeypatch, tmp_path, DER_ROWS)[0] == 0
+    first = raw_files(tmp_path)
+    raw_dir = tmp_path / "raw" / "windows.machine"
+    mtimes = {p.name: p.stat().st_mtime_ns for p in raw_dir.iterdir()}
+
+    assert run_with_der(monkeypatch, tmp_path, DER_ROWS)[0] == 0
+    assert raw_files(tmp_path) == first
+    # Files already holding the right bytes are not rewritten.
+    assert {p.name: p.stat().st_mtime_ns for p in raw_dir.iterdir()} == mtimes
+    doc = json.loads((tmp_path / "store" / "windows.machine.json").read_text(encoding="utf-8"))
+    assert doc["provenance"]["raw"]["files"] == 3
+
+    # A certificate that left the store leaves the directory too, and a corrupted file is repaired.
+    gone = hashlib.sha256(der_for("C")).hexdigest() + ".der"
+    kept = hashlib.sha256(der_for("A")).hexdigest() + ".der"
+    (raw_dir / kept).write_bytes(b"corrupt")
+    unrelated = raw_dir / "README.txt"
+    unrelated.write_text("not a certificate", encoding="utf-8")
+    assert run_with_der(monkeypatch, tmp_path, DER_ROWS[:3])[0] == 0
+    files = raw_files(tmp_path)
+    assert gone not in files
+    assert files[kept] == der_for("A")
+    assert "README.txt" in files
+    assert not any(name.endswith(".tmp") for name in files)
 
 
 def test_a_provider_that_returns_nothing_claims_nothing(
