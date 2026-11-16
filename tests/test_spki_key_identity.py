@@ -150,3 +150,27 @@ def test_key_identity_arrives_through_an_artifact(tmp_path: Path) -> None:
     assert {k: sorted(v) for k, v in sharing.items()} == {certs[0][1]: sorted([root, twin])}
     assert expected[other] not in sharing
     assert artifact["agreement_with_store_artifact"]["agrees"] is True
+
+
+def test_a_der_directory_is_digested_by_its_manifest(tmp_path: Path) -> None:
+    """`collect_store.py --with-der` retains a directory; its digest must move with any file and not with a copy."""
+    raw = tmp_path / "raw" / "windows.machine"
+    raw.mkdir(parents=True)
+    for body in (b"one", b"two"):
+        (raw / f"{hashlib.sha256(body).hexdigest()}.der").write_bytes(body)
+    first = check_spki_artifact.raw_digest(raw)
+    assert first["raw_files"] == 2
+    assert first["raw_octets"] == 6
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    for path in raw.iterdir():
+        (copy / path.name).write_bytes(path.read_bytes())
+    assert check_spki_artifact.raw_digest(copy)["raw_sha256"] == first["raw_sha256"]
+    (raw / f"{hashlib.sha256(b'three').hexdigest()}.der").write_bytes(b"three")
+    assert check_spki_artifact.raw_digest(raw)["raw_sha256"] != first["raw_sha256"]
+
+
+def test_every_retained_source_names_a_reader_kind_asn1core_accepts() -> None:
+    for name, source in check_spki_artifact.SOURCES.items():
+        assert source["kind"] in {"pem", "certdata", "tar-pem", "der-dir"}, name
+        assert source["spki"] == f"{name}.spki.json", name

@@ -77,17 +77,64 @@ SOURCES: dict[str, dict[str, Any]] = {
         "spki": "mozilla.nss.spki.json",
         "retained_by": "collect_certdata.py caches the dump it fetches",
     },
+    # Added 2026-11-15, when the readers below started keeping what they read (`raw/<program>.pem` for bundles
+    # and readers, `raw/<artifact stem>/` of hash-named DER for the Windows provider with `--with-der`).
+    "certifi": {
+        "raw": "raw/certifi.pem",
+        "kind": "pem",
+        "artifact": "store/certifi.json",
+        "spki": "certifi.spki.json",
+        "retained_by": "collect_bundle.py --program certifi copies the installed file into raw/",
+    },
+    "node.bundled": {
+        "raw": "raw/node.bundled.pem",
+        "kind": "pem",
+        "artifact": "store/node.bundled.json",
+        "spki": "node.bundled.spki.json",
+        "retained_by": "collect_bundle.py --reader node keeps the reader's stdout",
+    },
+    "python.schannel": {
+        "raw": "raw/python.schannel.pem",
+        "kind": "pem",
+        "artifact": "store/python.schannel.json",
+        "spki": "python.schannel.spki.json",
+        "retained_by": "collect_bundle.py --reader py keeps the reader's stdout",
+    },
+    "java.cacerts": {
+        "raw": "raw/java.cacerts.pem",
+        "kind": "pem",
+        "artifact": "store/java.cacerts.json",
+        "spki": "java.cacerts.spki.json",
+        "retained_by": "collect_java.py keeps keytool -list -rfc's output byte for byte",
+    },
+    "windows.machine": {
+        "raw": "raw/windows.machine",
+        "kind": "der-dir",
+        "artifact": "store/windows.machine.json",
+        "spki": "windows.machine.spki.json",
+        "retained_by": "collect_store.py --with-der writes one verified DER file per certificate",
+    },
+    "windows.user": {
+        "raw": "raw/windows.user",
+        "kind": "der-dir",
+        "artifact": "store/windows.user.json",
+        "spki": "windows.user.spki.json",
+        "retained_by": "collect_store.py --location CurrentUser --with-der",
+    },
+    "windows.user-ca": {
+        "raw": "raw/windows.user-ca",
+        "kind": "der-dir",
+        "artifact": "store/windows.user-ca.json",
+        "spki": "windows.user-ca.spki.json",
+        "retained_by": "collect_store.py --location CurrentUser --store CA --with-der",
+    },
 }
 
 # Why a store cannot be re-derived here, stated instead of omitted. An empty row in a table reads as an
 # oversight; a reason reads as a measurement.
 NOT_RETAINED: dict[str, str] = {
-    "certifi": "read from the installed package's file, which no collector copied into raw/",
-    "java.cacerts": "printed by keytool to stdout and hashed there; the keystore itself was not retained",
-    "node.bundled": "printed by node to stdout from anchors compiled into its binary",
-    "python.schannel": "the OS store as crypt32 enumerated it that day, with no file behind it",
-    "windows.machine": "the OS provider's answer; --with-der would have written raw DER and was not passed",
-    "windows.user": "the OS provider's answer for this user; same reason as windows.machine",
+    # Every store in the table above can now keep its bytes; this stays for one that cannot, so its reason is
+    # stated rather than omitted.
 }
 
 # The fields of an identity row that carry the *same* claim as the store artifact's own, and so are compared
@@ -166,7 +213,12 @@ def run_reader(script: Path, kind: str, raw: Path, program: str, out: Path) -> t
     block describes *its* command line, and this file restates what it found rather than passing that through
     as if this tool had run it. argv is a list, never a shell.
     """
-    flag = {"pem": "--pem", "certdata": "--certdata", "tar-pem": "--der-dir"}[kind]
+    flag = {
+        "pem": "--pem",
+        "certdata": "--certdata",
+        "tar-pem": "--der-dir",
+        "der-dir": "--der-dir",
+    }[kind]
     target = str(raw) if kind != "tar-pem" else str(extract_dir(raw, out))
     argv = [sys.executable, str(script), "--program", program, flag, target, "--out", str(out)]
     try:
@@ -273,6 +325,29 @@ def compare(claimed: list[dict[str, Any]], derived: dict[str, dict[str, Any]]) -
     }
 
 
+def raw_digest(raw: Path) -> dict[str, Any]:
+    """The retained payload's digest for the identity artifact's provenance.
+
+    A file is hashed as it is. A directory of hash-named DER (`collect_store.py --with-der`) is hashed as its
+    manifest: one `<name> <sha256 of the bytes>` line per file, sorted, so the digest moves when any file is
+    added, removed or altered, and not when the directory is merely copied elsewhere."""
+    if raw.is_dir():
+        files = sorted(p for p in raw.iterdir() if p.is_file())
+        manifest = "".join(
+            f"{p.name} {hashlib.sha256(p.read_bytes()).hexdigest()}\n" for p in files
+        )
+        return {
+            "raw_sha256": hashlib.sha256(manifest.encode("ascii")).hexdigest(),
+            "raw_octets": sum(p.stat().st_size for p in files),
+            "raw_files": len(files),
+            "raw_digest_of": "the sorted manifest of '<file name> <sha256>' lines",
+        }
+    return {
+        "raw_sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+        "raw_octets": raw.stat().st_size,
+    }
+
+
 def write_spki_artifact(
     data: Path, name: str, source: dict[str, Any], identity: dict[str, Any], script: Path
 ) -> tuple[Path, dict[str, Any]]:
@@ -319,8 +394,7 @@ def write_spki_artifact(
         "derived_at": now(),
         "provenance": {
             "raw": str(data / source["raw"]),
-            "raw_sha256": hashlib.sha256((data / source["raw"]).read_bytes()).hexdigest(),
-            "raw_octets": (data / source["raw"]).stat().st_size,
+            **raw_digest(data / source["raw"]),
             "reader": str(script),
             "reader_version": _git_head(script.parent.parent),
             "store_artifact": source["artifact"],
@@ -379,7 +453,7 @@ def check_one(
         "kind": source["kind"],
         "spki_artifact": source["spki"],
     }
-    if not raw.is_file():
+    if not (raw.is_dir() if source["kind"] == "der-dir" else raw.is_file()):
         # Refused, and nothing written. Not a row in an artifact either — see `--report`: the record of a
         # refusal belongs on stdout, where it cannot be mistaken for last week's successful derivation.
         print(
