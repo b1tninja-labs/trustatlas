@@ -456,6 +456,36 @@ Distrust and revocation sources are listed here as names to probe, not as measur
 endpoints are unverified (see Unverified): `tools/probe_sources.py` records them first, and decoding any of them is
 an obligation for the project that owns that format, never a parser grown in `tools/`.
 
+## Use case: screening issued keys, CA first (owner, 2026-11-15)
+
+The owner's purpose for the leaf side of the map is **defensive research**: make sure no CA or sub-CA is issuing
+leaves whose keys are weak or carry no real entropy, the eMudhra-style failure where a private key was recoverable
+from its own certificate. A screening tool already exists outside this workspace (emitm's `gpu_leaf_scan.py`, GPU
+search for small private exponents over leaf public keys); what it lacks is a corpus with provenance. Two owner
+statements fix the shape:
+
+- **The catalog starts with the CAs, then their leaves.** Every CA certificate a program lists or a chain carries —
+  roots from the stores already read here, intermediates from CT `extra_data` chains and from the CCADB — is
+  catalogued by SPKI SHA-256 first, so that leaves are always pulled, counted and screened **per issuing key**. A
+  result then reads "issuer K, N leaves screened, curve mix C, window W", never "CT is clean".
+- **Bulk CT download is intended**, because the crt.sh replacement (`ctspy` for the protocol, `certledger` for the
+  walk and the index) needs millions of certificates anyway. Which logs, which window and what request budget are
+  still the owner's to set per run, and `certledger/HARVEST-PLAN.md` owns the walk.
+
+Ownership, so nothing here grows protocol logic:
+
+| Piece | Owner | Row |
+| --- | --- | --- |
+| The CA catalog: every CA certificate and key across stores, CCADB and chains, with the programs listing it | trustatlas | `ta.ca_catalog` |
+| The walk, the issuer-sorted spine, and a per-issuer leaf corpus in the screening format | `certledger` | its `HARVEST-PLAN.md` rows |
+| A public key's curve and point, or modulus and exponent, extracted from SPKI | `asn1core` | a new `dk.` row |
+| The CT client (entries, tiles, proofs) | `ctspy` | existing rows |
+| A weak key found: proof of possession, never an accusation | `keyproof` | its register |
+
+The corpus must report what it did not cover. The screener handles P-384 only today, so a mostly P-256 corpus
+screened by it says almost nothing unless the curve mix is printed beside the verdict. And absence of a finding is
+graded like every other absence here: by issuer, log, window and curve examined.
+
 ## Design goals
 
 1. **Every rendered claim names its evidence** — a fixture and a test, or a provenance record naming the command
@@ -764,6 +794,11 @@ reference can still be followed.
 5. **Who owns decoding distrust lists.** Chrome CRLSets, Mozilla OneCRL and the Windows `disallowedcertstl.cab`
    each need a decoder, and trustatlas may not write one. `pkix` M7 already owns the CTL; CRLSets and OneCRL have no
    owning project yet (`revokekit` is the natural candidate).
+6. **Issued-key screening** — **decided 2026-11-15**: the purpose is defensive (find CAs or sub-CAs issuing weak or
+   entropy-less keys), the catalog is CA first, and bulk CT download is intended as part of the crt.sh replacement.
+   Still open beneath it: the logs, window and request budget of each walk; which curves and key types the screener
+   must cover before a result is published; and how a finding is disclosed to the CA and the root programs before
+   anything reaches `keyproof`'s register.
 
 ## Unverified — check before repeating any of this
 
