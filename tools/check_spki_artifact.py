@@ -372,6 +372,12 @@ def write_spki_artifact(
             "der_octets": row.get("der_octets"),
             "encoding": row.get("encoding"),
         }
+        # basicConstraints, keyUsage and extendedKeyUsage exactly as asn1core decoded them (its `dk.anchors-usage`),
+        # with presence, criticality and an undecodable or duplicated status kept, and any `defects` asn1core
+        # recorded for a row it read leniently. Carried through unread: what they mean for a chain is `pkix`'s.
+        for field in ("extensions", "defects"):
+            if row.get(field) not in (None, [], {}):
+                entry[field] = row[field]
         for field in ("alias", "labels", "store", "trust", "eku"):
             if named.get(field) not in (None, [], {}):
                 entry[f"artifact_{field}"] = named[field]
