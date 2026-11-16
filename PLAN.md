@@ -486,6 +486,39 @@ The corpus must report what it did not cover. The screener handles P-384 only to
 screened by it says almost nothing unless the curve mix is printed beside the verdict. And absence of a finding is
 graded like every other absence here: by issuer, log, window and curve examined.
 
+## The next layer: what a CA's key usage and extended key usage do to chains (owner, 2026-11-15)
+
+Membership says a store lists a CA; it does not say a leaf can chain through it for the purpose a client wants.
+Two layers decide that, and they are kept apart because only one is the standard.
+
+**What RFC 5280 makes binding** (read through primarysource, 2026-11-15):
+
+- For every intermediate, path validation's step (n): "If a key usage extension is present, verify that the
+  keyCertSign bit is set" (RFC 5280 §6.1.4¶31), and the procedure terminates with a failure if it is not (¶33). A CA
+  certificate whose keyUsage omits keyCertSign therefore breaks **every** chain through it, whatever store lists it.
+- A certificate with extendedKeyUsage "MUST only be used for one of the purposes indicated" (§4.2.1.12¶7), and where
+  keyUsage and extendedKeyUsage are both present they "MUST be processed independently" and a certificate with no
+  purpose consistent with both "MUST NOT be used for any purpose" (¶9). Two verified errata (5802, 6414) apply to
+  that section's serverAuth and clientAuth notes.
+
+**What RFC 5280 does not say:** its path-validation procedure (§6) has no extendedKeyUsage step, and §4.2.1.12¶1 expects
+the extension "in general" only in end-entity certificates. Treating an intermediate's EKU as a limit on the leaves
+below it ("EKU chaining") is verifier policy, not the profile, so which verifiers do it, and how, is **measured per
+verifier, never assumed** (see Unverified).
+
+So the map reports, per CA certificate and per store that lists it:
+
+| Finding | Basis | Effect stated as |
+| --- | --- | --- |
+| keyUsage present without keyCertSign | RFC 5280 §6.1.4(n) | breaks every chain through it |
+| keyUsage and EKU with no consistent purpose | RFC 5280 §4.2.1.12¶9 | usable for no purpose |
+| EKU on a CA that omits a purpose (say serverAuth) | verifier policy | may restrict leaves under verifiers that chain EKU, naming which |
+| The store's own purpose bits disagree with the certificate (NSS trust bits, Windows EKU property) | the store's program | the store narrows or widens what the certificate says, recorded under `ta.constraints` |
+
+Ownership: `asn1core` decodes basicConstraints, keyUsage and extendedKeyUsage (its decoders exist; its anchor reader
+must emit them); `pkix` owns what a path does with them (it enforces §6.1.4(n) today and owns any EKU-chaining
+policy); trustatlas joins the result per store (`ta.ca_usage`) and never decides validity itself.
+
 ## Design goals
 
 1. **Every rendered claim names its evidence** — a fixture and a test, or a provenance record naming the command
@@ -811,6 +844,9 @@ reference can still be followed.
 - The distrust and revocation sources named in the user story: Chrome CRLSets, Mozilla OneCRL, NSS distrust-after
   fields in `certdata.txt`, Apple's own revocation service. Their endpoints, formats, signing and update cadence are
   recalled, not measured; none has been probed from this machine.
+- Which verifiers treat an intermediate's extendedKeyUsage as a limit on its leaves, and how (Windows CryptoAPI,
+  NSS, Chrome's verifier, Java, OpenSSL, Go). RFC 5280 does not specify it (§6 has no EKU step); any statement about
+  a given verifier needs a measurement or that verifier's own documentation, cited.
 - Brand collisions off PyPI. `names.py` checks package indexes; it does not check whether the same name already
   exists on the web. Check before publishing anything.
 
