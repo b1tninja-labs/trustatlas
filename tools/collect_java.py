@@ -16,6 +16,12 @@ Naming is deliberately modest. `keytool -list -rfc` puts an *alias* where a curl
 under `alias` and `subject` stays absent, so the joiner treats this side as hash-only the way it treats
 every other bundle.
 
+The PEM keytool printed is retained, byte for byte, as `raw/<program>.pem` under `--data`, with its path,
+SHA-256 and octet count in the provenance (`raw`, `raw_sha256`, `raw_octets`), so `check_spki_artifact.py`
+can hand it to asn1core for SPKI digests. The retained file is re-indexed from disk before anything is kept;
+if it does not reproduce the artifact's certificate digest set, nothing is written and the exit is non-zero.
+The storepass is never retained: keytool does not echo it, and output that carries it is refused.
+
 Usage:
     python tools/collect_java.py --data M:\\trustatlas
     python tools/collect_java.py --keystore "C:\\path\\to\\jdk\\lib\\security\\cacerts"
@@ -28,6 +34,7 @@ import datetime
 import glob
 import hashlib
 import json
+import locale
 import os
 import platform
 import subprocess
@@ -38,6 +45,8 @@ from collect_bundle import index_pem
 
 DEFAULT_PROGRAM = "java.cacerts"
 DEFAULT_STOREPASS = "changeit"
+# What `subprocess.run(..., text=True)` decodes a child's output with, which is what this file used to rely on.
+STDOUT_ENCODING = locale.getpreferredencoding(False)
 # Where a JDK keeps cacerts, in the order a reader would look. Oracle's Windows `javapath` directory is
 # deliberately absent: it holds a java.exe stub and no lib/, so it is not a JDK root.
 SEARCH_GLOBS = (
@@ -101,6 +110,16 @@ def jdk_version(jdk_bin: Path) -> str:
     return "no java beside keytool"
 
 
+def as_text(payload: bytes) -> str:
+    """Decode keytool's output the way `subprocess.run(..., text=True)` would: locale encoding, universal newlines."""
+    return payload.decode(STDOUT_ENCODING).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def read_retained(path: Path) -> bytes:
+    """The retained PEM as read back from disk. A seam on purpose: the re-index check reads through it."""
+    return path.read_bytes()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -138,18 +157,48 @@ def main() -> int:
         args.storepass,
     ]
     try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=180)  # noqa: S603
+        # Bytes, not text mode: the retained file is what keytool wrote, byte for byte. `as_text` then
+        # applies the same decode-and-newline step text mode would have, so the index is unchanged.
+        done = subprocess.run(command, capture_output=True, timeout=180)  # noqa: S603
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"keytool could not run: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+    stdout_bytes: bytes = done.stdout or b""
+    stderr_text = as_text(done.stderr or b"")
     if done.returncode != 0:
-        detail = (done.stderr or done.stdout).strip()[:400]
+        detail = (stderr_text or as_text(stdout_bytes)).strip()[:400]
         print(f"keytool exited {done.returncode}: {detail}", file=sys.stderr)
         print("A keystore that will not open is a fact about the host.", file=sys.stderr)
         return 1
+    if args.storepass and args.storepass.encode(STDOUT_ENCODING) in stdout_bytes:
+        # keytool does not echo the storepass; if this output carries it, retaining it would publish it.
+        print(
+            "keytool output contains the storepass; refusing to retain it. Nothing was written.",
+            file=sys.stderr,
+        )
+        return 1
 
     raw = keystore.read_bytes()
-    seen, counts = index_pem(done.stdout, program=args.program, name_key="alias")
+    seen, counts = index_pem(as_text(stdout_bytes), program=args.program, name_key="alias")
+
+    # Retain the PEM as keytool printed it, so asn1core can re-derive SPKI from it later
+    # (`check_spki_artifact.py`). It is written beside its final name first and re-indexed from disk: if what
+    # was retained does not reproduce the digest set this artifact lists, neither file is written.
+    raw_path = Path(args.data) / "raw" / f"{args.program}.pem"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    pending = raw_path.with_name(raw_path.name + ".partial")
+    pending.write_bytes(stdout_bytes)
+    retained = read_retained(pending)
+    again, _ = index_pem(as_text(retained), program=args.program, name_key="alias")
+    if retained != stdout_bytes or set(again) != set(seen):
+        pending.unlink(missing_ok=True)
+        print(
+            f"re-indexing the retained PEM gave {len(again)} certificates, the artifact lists {len(seen)}"
+            f" ({len(set(again) ^ set(seen))} differ). Nothing was written.",
+            file=sys.stderr,
+        )
+        return 1
+    os.replace(pending, raw_path)
 
     doc = {
         "artifact": "trustatlas.bundle.collect",
@@ -168,7 +217,19 @@ def main() -> int:
                 "collect_bundle.index_pem: split CERTIFICATE blocks, base64-decode, SHA-256 the DER"
             ),
             "host": f"{platform.system()}-{platform.release()}-{platform.machine()}",
-            "keytool_stderr": (done.stderr or "").strip()[:600],
+            "keytool_stderr": stderr_text.strip()[:600],
+            "raw": str(raw_path),
+            "raw_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+            "raw_octets": len(stdout_bytes),
+            "raw_form": (
+                f"keytool -list -rfc stdout, byte for byte; indexed after decoding as {STDOUT_ENCODING} "
+                "with newlines normalised, as text mode would"
+            ),
+            "raw_reindex": {
+                "check": "re-read the retained file and re-ran index_pem; the digest set must equal this artifact's",
+                "distinct_certificates": len(again),
+                "agrees": True,
+            },
             "looked": looked,
             "note": (
                 "hashes and counts only, and the name carried is the keystore's alias, not a subject. "

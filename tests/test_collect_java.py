@@ -88,9 +88,9 @@ def test_aliases_are_captured_and_subjects_stay_absent(
     printed = keytool_rfc(entries)
     calls: list[list[str]] = []
 
-    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
         calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout=printed, stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout=printed.encode("ascii"), stderr=b"")
 
     monkeypatch.setattr(collect_java.subprocess, "run", fake_run)
     monkeypatch.setattr(
@@ -132,3 +132,113 @@ def test_aliases_are_captured_and_subjects_stay_absent(
     assert "changeit" not in provenance["command"]
     assert "<storepass>" in provenance["command"]
     assert "not a subject" in provenance["note"]
+
+
+STOREPASS = "n0t-the-default-Storepass"
+
+
+def run_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    printed: bytes,
+    *extra: str,
+) -> tuple[int, Path]:
+    """Run `collect_java.main` against a stubbed keytool that prints `printed`; returns (exit, data dir)."""
+    jdk = tmp_path / "jdk"
+    keystore = jdk / "lib" / "security" / "cacerts"
+    keystore.parent.mkdir(parents=True)
+    keystore.write_bytes(b"not a keystore: keytool is stubbed, and this file is only hashed")
+    (jdk / "bin").mkdir()
+    (jdk / "bin" / "keytool").write_bytes(b"")
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        return subprocess.CompletedProcess(argv, 0, stdout=printed, stderr=b"")
+
+    data = tmp_path / "data"
+    monkeypatch.setattr(collect_java.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["collect_java.py", "--data", str(data), "--keystore", str(keystore), *extra],
+    )
+    return collect_java.main(), data
+
+
+ENTRIES = [("actalisauthenticationrootca [jdk]", b"A"), ("digicertglobalrootg2 [jdk]", b"C")]
+
+
+def test_raw_pem_is_retained_byte_for_byte_and_its_digest_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """keytool's stdout lands at `raw/java.cacerts.pem` unchanged (CRLF included), and the provenance names it."""
+    printed = keytool_rfc(ENTRIES).replace("\n", "\r\n").encode("ascii")
+    code, data = run_collector(tmp_path, monkeypatch, printed)
+    assert code == 0
+
+    raw = data / "raw" / "java.cacerts.pem"
+    assert raw.read_bytes() == printed
+    assert not list((data / "raw").glob("*.partial"))
+
+    provenance = json.loads((data / "store" / "java.cacerts.json").read_text("utf-8"))["provenance"]
+    assert provenance["raw"] == str(raw)
+    assert provenance["raw_sha256"] == hashlib.sha256(printed).hexdigest()
+    assert provenance["raw_octets"] == len(printed)
+    assert provenance["raw_reindex"]["agrees"] is True
+    assert provenance["raw_reindex"]["distinct_certificates"] == len(ENTRIES)
+
+
+def test_reindexing_the_retained_file_reproduces_the_artifact_digest_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What `check_spki_artifact.py` will read is the same certificate set the artifact lists."""
+    code, data = run_collector(tmp_path, monkeypatch, keytool_rfc(ENTRIES).encode("ascii"))
+    assert code == 0
+
+    doc = json.loads((data / "store" / "java.cacerts.json").read_text("utf-8"))
+    listed = {row["sha256"] for row in doc["certificates"]}
+    retained = (data / "raw" / "java.cacerts.pem").read_bytes()
+    again, _ = collect_java.index_pem(
+        collect_java.as_text(retained), program="java.cacerts", name_key="alias"
+    )
+    assert set(again) == listed
+    assert listed == {hashlib.sha256(synthetic_der(m)).hexdigest() for _, m in ENTRIES}
+
+
+def test_a_retained_file_that_does_not_reindex_refuses_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the bytes read back from disk lose a certificate, neither the raw file nor the artifact is kept."""
+    printed = keytool_rfc(ENTRIES).encode("ascii")
+    # The read-back drops the second entry: same file name, a different certificate set.
+    truncated = keytool_rfc(ENTRIES[:1]).encode("ascii")
+    monkeypatch.setattr(collect_java, "read_retained", lambda _path: truncated)
+    code, data = run_collector(tmp_path, monkeypatch, printed)
+
+    assert code != 0
+    assert not (data / "store" / "java.cacerts.json").exists()
+    assert not (data / "raw" / "java.cacerts.pem").exists()
+    assert not [p for p in data.rglob("*") if p.is_file()]
+
+
+def test_the_storepass_appears_in_no_written_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-default storepass reaches keytool's argv, and no byte of any written file carries it."""
+    code, data = run_collector(
+        tmp_path, monkeypatch, keytool_rfc(ENTRIES).encode("ascii"), "--storepass", STOREPASS
+    )
+    assert code == 0
+    written = [p for p in data.rglob("*") if p.is_file()]
+    assert {p.name for p in written} == {"java.cacerts.pem", "java.cacerts.json"}
+    for path in written:
+        assert STOREPASS.encode("ascii") not in path.read_bytes(), path
+
+
+def test_output_that_echoes_the_storepass_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """keytool does not echo the storepass; if its output ever did, retaining it would publish it."""
+    printed = (f"Keystore password: {STOREPASS}\n" + keytool_rfc(ENTRIES)).encode("ascii")
+    code, data = run_collector(tmp_path, monkeypatch, printed, "--storepass", STOREPASS)
+    assert code != 0
+    assert not data.exists() or not [p for p in data.rglob("*") if p.is_file()]
